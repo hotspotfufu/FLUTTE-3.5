@@ -1,0 +1,43 @@
+; Engine configuration file.
+; Target engine: Godot 4.7.2 stable (GDScript only, no plugins).
+; Opening the project in the editor will refresh this file automatically.
+
+config_version=5
+
+[application]
+
+config/name="FLUTTE"
+config/description="A 2.5D red panda adventure: bamboo forest, bamboo-stick combat, and a very sleepy hero."
+run/main_scene="res://Scenes/Levels/Level01_BambooForest.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+config/icon="res://icon.png"
+
+[display]
+
+window/size/viewport_width=1920
+window/size/viewport_height=1080
+window/size/window_width_override=1280
+window/size/window_height_override=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=4
+
+[input_devices]
+
+pointing/emulate_touch_from_mouse=true
+
+[layer_names]
+
+3d_physics/layer_1="World"
+3d_physics/layer_2="Player"
+3d_physics/layer_3="Enemies"
+3d_physics/layer_4="Collectibles"
+3d_physics/layer_5="PlayerAttack"
+3d_physics/layer_6="EnemyAttack"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+environment/defaults/default_clear_color=Color(0.98, 0.72, 0.82, 1)

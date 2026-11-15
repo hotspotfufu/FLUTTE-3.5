@@ -1,0 +1,36 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://Scripts/Environments/bamboo_platform.gd" id="1_script"]
+
+[sub_resource type="StandardMaterial3D" id="Mat_plank"]
+albedo_color = Color(0.62, 0.42, 0.26, 1)
+roughness = 0.9
+
+[sub_resource type="StandardMaterial3D" id="Mat_trim"]
+albedo_color = Color(0.52, 0.70, 0.30, 1)
+roughness = 0.8
+
+[sub_resource type="BoxMesh" id="Mesh_plank"]
+material = SubResource("Mat_plank")
+size = Vector3(1, 1, 1)
+
+[sub_resource type="BoxMesh" id="Mesh_trim"]
+material = SubResource("Mat_trim")
+size = Vector3(1, 1, 1)
+
+[sub_resource type="BoxShape3D" id="Shape_platform"]
+size = Vector3(3, 0.4, 1.6)
+
+[node name="BambooPlatform" type="StaticBody3D"]
+script = ExtResource("1_script")
+
+[node name="Plank" type="MeshInstance3D" parent="."]
+transform = Transform3D(3, 0, 0, 0, 0.4, 0, 0, 0, 1.6, 0, 0, 0)
+mesh = SubResource("Mesh_plank")
+
+[node name="Trim" type="MeshInstance3D" parent="."]
+transform = Transform3D(3.08, 0, 0, 0, 0.08, 0, 0, 0, 1.64, 0, 0.18, 0)
+mesh = SubResource("Mesh_trim")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("Shape_platform")
