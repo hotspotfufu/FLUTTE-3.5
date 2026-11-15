@@ -1,159 +1,106 @@
 extends Node
-## Turns on Flutte's controls, the bamboo pickups and the bamboo counter.
-##
-## Set up WITHOUT opening Godot: add this line under [autoload] in project.godot
-##     FlutteGameplay="*res://Scripts/flutte_gameplay_setup.gd"
-## Then whenever a level scene loads (any scene whose file name contains "Level"),
-## this script:
-##   1. spawns a playable Flutte (unless one is already in the level)
-##   2. adds the bamboo counter
-##   3. floats bamboo sticks above the platforms it finds
-##      (skipped if the level already has bamboo placed by hand)
-##
-## Keep all five Flutte scripts together in the same folder.
-## Spawn point: a Marker2D named "PlayerSpawn" in the level, otherwise the left-most platform.
+## Turns the Stage 1 bamboo forest into a playable level.
+## Runs automatically (it is an autoload in project.godot) whenever a scene whose
+## file name contains "Level" starts. It:
+##   1. swaps the still panda picture (PandaScaleReference) for a playable Flutte
+##   2. makes the camera follow Flutte instead of panning with A/D
+##   3. floats bamboo sticks along the ground and above every platform
+##   4. adds the bamboo counter and updates the on-screen controls hint
 
-@export var level_name_contains := "level"
-@export var spawn_player := true
-@export var add_hud := true
-@export var auto_place_bamboo := true
-@export var bamboo_height_above_platform := 70.0
-@export var ground_group_spacing := 520.0
-
-const SHAPE_LINE := 0
-const SHAPE_ARC := 1
+const HINT := "A/D or Arrows: walk   Shift: run   Space: jump   J or F: swing staff   N: day / night"
 
 var _dir := ""
 var _last_scene: Node = null
-var _is_autoload := false
 
 
 func _ready() -> void:
 	_dir = get_script().resource_path.get_base_dir()
-	_is_autoload = get_parent() == get_tree().root
-	if not _is_autoload:
-		# placed directly inside a level scene
-		await get_tree().process_frame
-		await get_tree().process_frame
-		_setup(get_parent())
 
 
 func _process(_delta: float) -> void:
-	if not _is_autoload:
-		return
 	var scene := get_tree().current_scene
-	if scene == _last_scene or scene == null:
+	if scene == null or scene == _last_scene:
 		return
 	_last_scene = scene
-	if scene.scene_file_path.get_file().to_lower().contains(level_name_contains):
-		_run_when_ready(scene)
-
-
-func _run_when_ready(scene: Node) -> void:
-	# give bamboo_forest_builder.gd time to build the platforms
-	await get_tree().process_frame
-	await get_tree().process_frame
-	if is_instance_valid(scene) and scene == get_tree().current_scene:
-		_setup(scene)
-
-
-func _new(file: String) -> Object:
-	return load(_dir + "/" + file).new()
+	if scene.scene_file_path.get_file().to_lower().contains("level"):
+		_setup.call_deferred(scene)
 
 
 func _setup(level: Node) -> void:
-	var rects := _platform_rects(level)
+	if not is_instance_valid(level) or not (level is Node3D):
+		return
+	if get_tree().get_first_node_in_group("player") != null:
+		return
 
-	# --- where does Flutte start? ---
-	var spawn := Vector2(200, 0)
-	var marker := level.find_child("PlayerSpawn", true, false)
-	if marker is Node2D:
-		spawn = (marker as Node2D).global_position
-	elif rects.size() > 0:
-		var left: Rect2 = rects[0]
-		for r in rects:
-			if r.position.x < left.position.x:
-				left = r
-		spawn = Vector2(left.position.x + minf(90.0, left.size.x * 0.5), left.position.y - 2.0)
+	# --- Flutte ---
+	var spawn := Vector3(4, 0.2, 0)
+	var ref := level.get_node_or_null("PandaScaleReference")
+	if ref is Node3D:
+		spawn = Vector3((ref as Node3D).global_position.x, 0.2, 0)
+		ref.queue_free()
+	var player: CharacterBody3D = load(_dir + "/flutte_player.gd").new()
+	player.name = "Flutte"
+	level.add_child(player)
+	player.global_position = spawn
+	player.set("spawn_point", spawn)
 
-	var lowest := spawn.y
-	for r in rects:
-		lowest = maxf(lowest, r.end.y)
+	# --- hint text ---
+	var hint := level.get_node_or_null("HUD/Hint")
+	if hint is Label:
+		(hint as Label).text = "BAMBOO FOREST\n" + HINT
 
-	# --- player ---
-	var player: Node = get_tree().get_first_node_in_group("player")
-	if player == null and spawn_player:
-		var p: CharacterBody2D = _new("flutte_player.gd")
-		p.name = "Flutte"
-		level.add_child(p)
-		p.global_position = spawn
-		p.set("spawn_point", spawn)
-		player = p
-	if player:
-		player.set("kill_y", lowest + 1200.0)
+	# --- bamboo counter ---
+	var hud: CanvasLayer = load(_dir + "/bamboo_hud.gd").new()
+	level.add_child(hud)
 
-	# --- HUD ---
-	if add_hud and get_tree().get_nodes_in_group("bamboo_hud").is_empty():
-		var hud: CanvasLayer = _new("bamboo_hud.gd")
-		hud.name = "BambooHUD"
-		level.add_child(hud)
-
-	# --- bamboo ---
-	if auto_place_bamboo and get_tree().get_nodes_in_group("bamboo").is_empty():
-		_scatter_bamboo(level, rects, spawn)
+	# --- bamboo sticks ---
+	if get_tree().get_nodes_in_group("bamboo").is_empty():
+		_place_bamboo(level, spawn.x)
 
 
-func _make_trail(holder: Node, shape: int, count: int, spacing: float, arc: float, pos: Vector2) -> void:
-	var t: Node2D = _new("bamboo_trail.gd")
-	t.set("count", count)
-	t.set("spacing", spacing)
-	t.set("shape", shape)
-	t.set("arc_height", arc)
-	holder.add_child(t)
-	t.global_position = pos
-
-
-func _scatter_bamboo(level: Node, rects: Array[Rect2], spawn: Vector2) -> void:
-	var holder := Node2D.new()
-	holder.name = "AutoBamboo"
+func _place_bamboo(level: Node, spawn_x: float) -> void:
+	var holder := Node3D.new()
+	holder.name = "Bamboo"
 	level.add_child(holder)
-	var idx := 0
-	for r in rects:
-		if r.size.x < 50.0:
-			continue
-		var top := r.position.y - bamboo_height_above_platform
-		if r.size.x <= 700.0:
-			var n := clampi(int(r.size.x / 70.0), 1, 6)
-			var shape := SHAPE_ARC if idx % 3 == 2 else SHAPE_LINE
-			_make_trail(holder, shape, n, minf(55.0, r.size.x / float(n)), 55.0, Vector2(r.get_center().x, top))
-		else:
-			# long ground: a little arc of bamboo every ground_group_spacing pixels
-			var x := r.position.x + 300.0
-			while x < r.end.x - 200.0:
-				if absf(x - spawn.x) > 150.0:
-					_make_trail(holder, SHAPE_ARC, 5, 48.0, 60.0, Vector2(x, top))
-				x += ground_group_spacing
-		idx += 1
+	var trail_script: Script = load(_dir + "/bamboo_trail.gd")
 
+	# above each platform
+	var platform_xs: Array[float] = []
+	var platforms := level.get_node_or_null("Platforms")
+	if platforms:
+		var i := 0
+		for p in platforms.get_children():
+			if not (p is Node3D):
+				continue
+			p.add_to_group("one_way_platform")
+			var w := 3.0
+			if "width" in p:
+				w = float(p.get("width"))
+			var top := (p as Node3D).global_position.y + 0.2
+			var t: Node3D = trail_script.new()
+			t.set("count", clampi(int(w * 1.3), 2, 6))
+			t.set("spacing", 0.55)
+			t.set("shape", 1 if i % 3 == 2 else 0)
+			t.set("arc_height", 0.7)
+			holder.add_child(t)
+			t.global_position = Vector3((p as Node3D).global_position.x, top + 0.75, 0)
+			platform_xs.append((p as Node3D).global_position.x)
+			i += 1
 
-## World-space rectangles of every solid collision shape in the level.
-func _platform_rects(root: Node) -> Array[Rect2]:
-	var out: Array[Rect2] = []
-	_collect(root, out)
-	return out
-
-
-func _collect(node: Node, out: Array[Rect2]) -> void:
-	for c in node.get_children():
-		if c is PhysicsBody2D and not (c is CharacterBody2D):
-			for s in c.get_children():
-				if s is CollisionShape2D and s.shape and not s.disabled:
-					var r: Rect2 = s.global_transform * s.shape.get_rect()
-					if r.size.x < 100000.0 and r.size.y < 100000.0:
-						out.append(r)
-				elif s is CollisionPolygon2D and s.polygon.size() > 0:
-					var pr := Rect2(s.polygon[0], Vector2.ZERO)
-					for pt in s.polygon:
-						pr = pr.expand(pt)
-					out.append(s.global_transform * pr)
-		_collect(c, out)
+	# along the ground: arcs to jump through, plain rows under the platforms
+	var x := spawn_x + 4.0
+	var n := 0
+	while x < 100.0:
+		var near_platform := false
+		for px in platform_xs:
+			if absf(px - x) < 2.8:
+				near_platform = true
+		var g: Node3D = trail_script.new()
+		g.set("count", 4 if near_platform else 5)
+		g.set("spacing", 0.6)
+		g.set("shape", 0 if near_platform else 1)
+		g.set("arc_height", 1.3)
+		holder.add_child(g)
+		g.global_position = Vector3(x, 0.8, 0)
+		n += 1
+		x += 6.5
