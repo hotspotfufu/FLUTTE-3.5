@@ -44,4 +44,4 @@ environment/defaults/default_clear_color=Color(0.98, 0.72, 0.82, 1)
 
 [autoload]
 
-FlutteGameplay="*res://Flutte_scripts/flutte_gameplay_setup.gd"
+FlutteGameplay="*res://Flutte_scripts/Flutte_scripts/flutte_gameplay_setup.gd"
