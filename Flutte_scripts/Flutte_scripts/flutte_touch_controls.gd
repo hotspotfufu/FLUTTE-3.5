@@ -4,17 +4,21 @@ extends CanvasLayer
 ##     Push a little to walk, push all the way to run.
 ##   * JUMP button (bottom right) - tap again in the air to double jump.
 ##   * STAFF button - swing the bamboo staff.
+##   * TAIL button - spin around and whip enemies with his tail.
+##   * BEAM button - appears at 50 bamboo: fires the red beam from his chest diamond.
 ##   * Top-left buttons:  ?  = show / hide the instructions
 ##                        joystick icon = show / hide the touch controls
-##                        sun / moon = day / night
-## Keyboard shortcuts: H = instructions, T = touch controls, N = day / night.
-## Gamepad: Back/Select = instructions, Start = day / night.
+##                        gear = settings (day / night and the options above)
+## Keyboard shortcuts: H = instructions, T = touch controls, Esc = settings, N = day / night.
+## Gamepad: Back/Select = instructions, Start = settings.
 ## The touch controls start visible on phones/tablets and hidden on computers.
 
 const JOY_RADIUS := 120.0
 const KNOB_RADIUS := 52.0
 const JUMP_RADIUS := 96.0
 const STAFF_RADIUS := 80.0
+const TAIL_RADIUS := 72.0
+const BEAM_RADIUS := 70.0
 const TOP_RADIUS := 34.0
 const RUN_PUSH := 0.85
 const DEAD_ZONE := 0.18
@@ -29,6 +33,14 @@ var _joy_base := Vector2.ZERO
 var _joy_knob := Vector2.ZERO
 var _jump_index := -1
 var _staff_index := -1
+var _tail_index := -1
+var _beam_index := -1
+var _settings: Control
+var _btn_day: Button
+var _btn_night: Button
+var _btn_help: Button
+var _btn_touch: Button
+var _time := 0.0
 var _hint: Label = null
 var _day_night: Node = null
 var _font: Font
@@ -46,7 +58,10 @@ func _ready() -> void:
 	add_child(_canvas)
 	_add_shortcut("flutte_toggle_help", KEY_H, JOY_BUTTON_BACK)
 	_add_shortcut("flutte_toggle_touch", KEY_T, -1)
-	_add_shortcut("flutte_day_night", KEY_N, JOY_BUTTON_START)
+	_add_shortcut("flutte_day_night", KEY_N, -1)
+	_add_shortcut("flutte_settings", KEY_ESCAPE, JOY_BUTTON_START)
+	process_mode = Node.PROCESS_MODE_ALWAYS     # works while the game is paused in settings
+	_build_settings()
 	_hook_level.call_deferred()
 
 
@@ -66,10 +81,12 @@ func _hook_level() -> void:
 		# the old "double-tap anywhere" switch fights with the touch buttons,
 		# so day / night now lives on its own button (and the N key)
 		_day_night.set_process_unhandled_input(false)
+		_day_night.process_mode = Node.PROCESS_MODE_ALWAYS   # so day/night fades while paused
 	_refresh_hint()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_time += delta
 	_canvas.queue_redraw()
 
 
@@ -93,6 +110,21 @@ func _staff_pos() -> Vector2:
 	return Vector2(s.x - 390.0, s.y - 120.0)
 
 
+func _tail_pos() -> Vector2:
+	var s := _size()
+	return Vector2(s.x - 380.0, s.y - 320.0)
+
+
+func _beam_pos() -> Vector2:
+	var s := _size()
+	return Vector2(s.x - 170.0, s.y - 410.0)
+
+
+func _beam_ready() -> bool:
+	var p := get_tree().get_first_node_in_group("player")
+	return p != null and p.has_method("special_ready") and bool(p.call("special_ready"))
+
+
 func _top_pos(i: int) -> Vector2:
 	return Vector2(52.0 + i * 84.0, 52.0)
 
@@ -105,6 +137,11 @@ func _input(event: InputEvent) -> void:
 		_toggle_controls()
 	elif event.is_action_pressed("flutte_day_night"):
 		_toggle_day_night()
+	elif event.is_action_pressed("flutte_settings"):
+		_toggle_settings()
+
+	if _settings.visible:
+		return     # the settings panel's own buttons handle taps
 
 	if event is InputEventScreenTouch:
 		var t := event as InputEventScreenTouch
@@ -134,7 +171,7 @@ func _handle_press(index: int, pos: Vector2) -> bool:
 			match i:
 				0: _toggle_help()
 				1: _toggle_controls()
-				2: _toggle_day_night()
+				2: _toggle_settings()
 			return true
 	if not controls_visible:
 		return false
@@ -145,6 +182,14 @@ func _handle_press(index: int, pos: Vector2) -> bool:
 	if pos.distance_to(_staff_pos()) <= STAFF_RADIUS + 20.0:
 		_staff_index = index
 		Input.action_press("flutte_attack")
+		return true
+	if pos.distance_to(_tail_pos()) <= TAIL_RADIUS + 18.0:
+		_tail_index = index
+		Input.action_press("flutte_tail")
+		return true
+	if _beam_ready() and pos.distance_to(_beam_pos()) <= BEAM_RADIUS + 18.0:
+		_beam_index = index
+		Input.action_press("flutte_special")
 		return true
 	var s := _size()
 	if pos.x < s.x * 0.45 and pos.y > 140.0 and _joy_index == -1:
@@ -166,6 +211,14 @@ func _handle_release(index: int) -> bool:
 	if index == _staff_index:
 		_staff_index = -1
 		Input.action_release("flutte_attack")
+		return true
+	if index == _tail_index:
+		_tail_index = -1
+		Input.action_release("flutte_tail")
+		return true
+	if index == _beam_index:
+		_beam_index = -1
+		Input.action_release("flutte_special")
 		return true
 	if index == _joy_index:
 		_joy_index = -1
@@ -222,10 +275,16 @@ func _toggle_controls() -> void:
 		_joy_index = -1
 		_jump_index = -1
 		_staff_index = -1
-		_release_move()
-		Input.action_release("flutte_jump")
-		Input.action_release("flutte_attack")
+		_tail_index = -1
+		_beam_index = -1
+		_release_all()
 	_refresh_hint()
+
+
+func _release_all() -> void:
+	_release_move()
+	for a in ["flutte_jump", "flutte_attack", "flutte_tail", "flutte_special"]:
+		Input.action_release(a)
 
 
 func _toggle_day_night() -> void:
@@ -238,9 +297,9 @@ func _refresh_hint() -> void:
 		return
 	var t := "BAMBOO FOREST\n"
 	if controls_visible:
-		t += "Joystick: walk (push all the way to run)    JUMP: jump, tap again in the air to double jump    STAFF: swing\n"
-	t += "Keys: A/D walk   Shift run   Space jump (twice = double jump)   J or F swing staff   N day/night   H hide help\n"
-	t += "Gamepad: stick walk   A jump   X swing   RB run   Start day/night   Select hide help"
+		t += "Joystick: walk (push all the way to run)   JUMP (tap twice = double jump)   STAFF: swing   TAIL: spin attack   BEAM: at 50 bamboo\n"
+	t += "Keys: A/D walk   Shift run   Space jump (twice = double jump)   J staff   K tail spin   Q red beam (50 bamboo)   Esc settings   H hide help\n"
+	t += "Gamepad: stick walk   A jump   X staff   B tail spin   Y red beam   RB run   Start settings   Select hide help"
 	_hint.text = t
 	_hint.visible = help_visible
 
@@ -267,8 +326,8 @@ func _draw_controls() -> void:
 	_text_center("?", _top_pos(0), 40, Color.WHITE)
 	_round_button(_top_pos(1), TOP_RADIUS, controls_visible)
 	_draw_joy_icon(_top_pos(1))
-	_round_button(_top_pos(2), TOP_RADIUS, false)
-	_draw_sun_moon(_top_pos(2))
+	_round_button(_top_pos(2), TOP_RADIUS, _settings.visible)
+	_draw_gear(_top_pos(2))
 
 	if not controls_visible:
 		return
@@ -300,6 +359,28 @@ func _draw_controls() -> void:
 	c.draw_line(sp + Vector2(-34, 24), sp + Vector2(30, -40), Color(0.75, 0.9, 0.35), 8.0)
 	_text_center("STAFF", sp + Vector2(0, 46), 26, Color.WHITE)
 
+	# tail spin
+	var tp := _tail_pos()
+	var tdown := _tail_index != -1
+	c.draw_circle(tp, TAIL_RADIUS, Color(0.85, 0.35, 0.15, 0.85 if tdown else 0.55))
+	c.draw_arc(tp, TAIL_RADIUS, 0.0, TAU, 48, Color(1, 1, 1, 0.9), 5.0, true)
+	c.draw_arc(tp + Vector2(0, -6), 34.0, deg_to_rad(-200), deg_to_rad(60), 24, Color(1, 1, 0.9, 0.95), 6.0, true)
+	for i in 4:
+		var d := Vector2.from_angle(deg_to_rad(-170 + i * 55))
+		c.draw_circle(tp + Vector2(0, -6) + d * 34.0, 7.0, Color(0.6, 0.12, 0.08) if i % 2 == 0 else Color(1, 0.92, 0.82))
+	_text_center("TAIL", tp + Vector2(0, 44), 24, Color.WHITE)
+
+	# beam (only once 50 bamboo are collected)
+	if _beam_ready():
+		var bp := _beam_pos()
+		var pulse := 0.5 + 0.5 * sin(_time * 7.0)
+		c.draw_circle(bp, BEAM_RADIUS + 8.0 + pulse * 8.0, Color(1.0, 0.1, 0.15, 0.25))
+		c.draw_circle(bp, BEAM_RADIUS, Color(0.9, 0.08, 0.15, 0.9 if _beam_index != -1 else 0.75))
+		c.draw_arc(bp, BEAM_RADIUS, 0.0, TAU, 48, Color(1, 1, 1, 0.95), 5.0, true)
+		c.draw_colored_polygon(PackedVector2Array([bp + Vector2(-26, -10), bp + Vector2(-12, -30), bp + Vector2(2, -10), bp + Vector2(-12, 12)]), Color(1, 0.75, 0.8))
+		c.draw_rect(Rect2(bp + Vector2(4, -16), Vector2(34, 12)), Color(1, 0.95, 0.95))
+		_text_center("BEAM", bp + Vector2(0, 40), 24, Color.WHITE)
+
 
 func _round_button(p: Vector2, r: float, on: bool) -> void:
 	_canvas.draw_circle(p, r, Color(0.45, 0.12, 0.2, 0.75) if on else Color(0.1, 0.05, 0.12, 0.45))
@@ -317,6 +398,14 @@ func _draw_joy_icon(p: Vector2) -> void:
 	_canvas.draw_circle(p + Vector2(5, -4), 8.0, Color.WHITE)
 
 
+func _draw_gear(p: Vector2) -> void:
+	for i in 8:
+		var d := Vector2.from_angle(TAU * i / 8.0 + 0.2)
+		_canvas.draw_line(p + d * 12.0, p + d * 21.0, Color.WHITE, 7.0)
+	_canvas.draw_circle(p, 15.0, Color.WHITE)
+	_canvas.draw_circle(p, 6.5, Color(0.2, 0.08, 0.12))
+
+
 func _draw_sun_moon(p: Vector2) -> void:
 	var night := _day_night != null and bool(_day_night.get("_is_night"))
 	if night:
@@ -327,3 +416,132 @@ func _draw_sun_moon(p: Vector2) -> void:
 		for i in 8:
 			var d := Vector2.from_angle(TAU * i / 8.0)
 			_canvas.draw_line(p + d * 15.0, p + d * 22.0, Color(1.0, 0.85, 0.3), 3.0)
+
+
+# ------------------------------------------------------------------ settings panel
+func _build_settings() -> void:
+	_settings = Control.new()
+	_settings.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_settings.visible = false
+	add_child(_settings)
+	var dim := ColorRect.new()
+	dim.color = Color(0.05, 0.0, 0.05, 0.55)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_settings.add_child(dim)
+
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.22, 0.07, 0.12, 0.96)
+	sb.border_color = Color(1.0, 0.85, 0.6)
+	sb.set_border_width_all(5)
+	sb.set_corner_radius_all(26)
+	sb.content_margin_left = 48
+	sb.content_margin_right = 48
+	sb.content_margin_top = 36
+	sb.content_margin_bottom = 36
+	panel.add_theme_stylebox_override("panel", sb)
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_settings.add_child(panel)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 22)
+	panel.add_child(col)
+	var title := Label.new()
+	title.text = "SETTINGS"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 46)
+	title.add_theme_color_override("font_color", Color(1.0, 0.9, 0.7))
+	col.add_child(title)
+
+	_btn_day = _option_button("Day")
+	_btn_night = _option_button("Night")
+	_btn_day.pressed.connect(func(): _set_night(false))
+	_btn_night.pressed.connect(func(): _set_night(true))
+	col.add_child(_row("Time of day", [_btn_day, _btn_night]))
+
+	_btn_help = _option_button("On")
+	_btn_help.pressed.connect(func(): _toggle_help(); _sync_settings())
+	col.add_child(_row("Instructions", [_btn_help]))
+
+	_btn_touch = _option_button("On")
+	_btn_touch.pressed.connect(func(): _toggle_controls(); _sync_settings())
+	col.add_child(_row("Touch controls", [_btn_touch]))
+
+	var close := _option_button("Close")
+	close.custom_minimum_size = Vector2(260, 76)
+	close.pressed.connect(_toggle_settings)
+	var holder := CenterContainer.new()
+	holder.add_child(close)
+	col.add_child(holder)
+
+
+func _row(text: String, buttons: Array) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	var l := Label.new()
+	l.text = text
+	l.custom_minimum_size = Vector2(300, 0)
+	l.add_theme_font_size_override("font_size", 32)
+	l.add_theme_color_override("font_color", Color.WHITE)
+	row.add_child(l)
+	for b in buttons:
+		row.add_child(b)
+	return row
+
+
+func _option_button(text: String) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.custom_minimum_size = Vector2(170, 72)
+	b.add_theme_font_size_override("font_size", 30)
+	b.focus_mode = Control.FOCUS_ALL
+	for state in ["normal", "hover", "pressed", "focus"]:
+		var st := StyleBoxFlat.new()
+		st.set_corner_radius_all(18)
+		st.bg_color = Color(0.45, 0.12, 0.2) if state == "normal" else Color(0.65, 0.2, 0.28)
+		if state == "focus":
+			st.draw_center = false
+			st.border_color = Color(1, 1, 1)
+			st.set_border_width_all(3)
+		b.add_theme_stylebox_override(state, st)
+	return b
+
+
+func _style_selected(b: Button, on: bool) -> void:
+	var st := StyleBoxFlat.new()
+	st.set_corner_radius_all(18)
+	st.bg_color = Color(0.95, 0.75, 0.3) if on else Color(0.45, 0.12, 0.2)
+	b.add_theme_stylebox_override("normal", st)
+	b.add_theme_color_override("font_color", Color(0.25, 0.08, 0.1) if on else Color.WHITE)
+
+
+func _sync_settings() -> void:
+	var night := _day_night != null and bool(_day_night.get("_is_night"))
+	_style_selected(_btn_day, not night)
+	_style_selected(_btn_night, night)
+	_btn_help.text = "On" if help_visible else "Off"
+	_style_selected(_btn_help, help_visible)
+	_btn_touch.text = "On" if controls_visible else "Off"
+	_style_selected(_btn_touch, controls_visible)
+
+
+func _set_night(night: bool) -> void:
+	if _day_night and _day_night.has_method("set_night"):
+		_day_night.call("set_night", night)
+	_sync_settings()
+
+
+func _toggle_settings() -> void:
+	_settings.visible = not _settings.visible
+	_joy_index = -1
+	_jump_index = -1
+	_staff_index = -1
+	_tail_index = -1
+	_beam_index = -1
+	_release_all()
+	get_tree().paused = _settings.visible     # the game waits while settings are open
+	if _settings.visible:
+		_sync_settings()
+		_btn_day.grab_focus()
