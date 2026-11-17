@@ -53,6 +53,11 @@ func _setup(level: Node) -> void:
 	var hud: CanvasLayer = load(_dir + "/bamboo_hud.gd").new()
 	level.add_child(hud)
 
+	# --- joystick, buttons, show/hide help, day/night button ---
+	var touch: CanvasLayer = load(_dir + "/flutte_touch_controls.gd").new()
+	touch.set("level", level)
+	level.add_child(touch)
+
 	# --- bamboo sticks ---
 	if get_tree().get_nodes_in_group("bamboo").is_empty():
 		_place_bamboo(level, spawn.x)

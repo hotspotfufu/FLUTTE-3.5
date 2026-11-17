@@ -9,9 +9,10 @@ extends CharacterBody3D
 ##     in a big arc, then puts it back (press again mid-swing for a second swing)
 ##
 ## Controls:  A/D or Left/Right = walk     hold Shift = run
-##            Space / W / Up = jump (hold for higher)
+##            Space / W / Up = jump, press again in the air = double jump
 ##            J / K / F = swing the staff
-##            Gamepad: left stick, A = jump, X = attack, RB = run
+##            Gamepad: left stick / D-pad, A = jump, X or B = attack, RB/LB/RT = run
+##            Touch: on-screen joystick + buttons (see flutte_touch_controls.gd)
 
 signal bamboo_changed(total: int)
 signal attacked
@@ -33,6 +34,8 @@ signal attacked
 @export var coyote_time := 0.10
 @export var jump_buffer_time := 0.12
 @export var jump_cut := 0.5
+@export var air_jumps := 1            ## 1 = double jump
+@export var double_jump_velocity := 10.0
 
 @export_group("Attack")
 @export var attack_damage := 1
@@ -112,9 +115,12 @@ var _arm_pivot: Node3D
 var _staff_hand: Node3D
 var _staff_back: Sprite3D
 var _hitbox: Area3D
-var _trail: MeshInstance3D
-var _trail_mesh: ImmediateMesh
-var _trail_pts: Array = []
+var _spin_root: Node3D
+var _air_jumps_left := 0
+var _flip_t := -1.0
+var _combo := 0
+var _sparks: CPUParticles3D
+static var _slash_shader: Shader
 var _sfx: AudioStreamPlayer
 var _cam: Camera3D
 var _cam_base := Vector3.ZERO
@@ -133,7 +139,7 @@ func _ready() -> void:
 	_build_collision()
 	_build_rig()
 	_build_hitbox()
-	_build_trail()
+	_build_sparks()
 	_sfx = AudioStreamPlayer.new()
 	_sfx.stream = _make_whoosh()
 	_sfx.volume_db = -7.0
@@ -175,9 +181,14 @@ func _pivot(parent: Node3D, point: Vector2, rel: Vector2) -> Node3D:
 
 
 func _build_rig() -> void:
+	_spin_root = Node3D.new()
+	_spin_root.name = "SpinRoot"
+	_spin_root.position = Vector3(0, 0.85, 0)
+	add_child(_spin_root)
 	_rig = Node3D.new()
 	_rig.name = "Rig"
-	add_child(_rig)
+	_rig.position = Vector3(0, -0.85, 0)
+	_spin_root.add_child(_rig)
 
 	_leg_back = _pivot(_rig, HIP_BACK, ORIGIN)
 	_leg_back.add_child(_sprite("flutte_leg_back.png", R_LEG_BACK, HIP_BACK, -0.030))
@@ -220,19 +231,34 @@ func _build_hitbox() -> void:
 	add_child(_hitbox)
 
 
-func _build_trail() -> void:
-	_trail_mesh = ImmediateMesh.new()
-	_trail = MeshInstance3D.new()
-	_trail.mesh = _trail_mesh
-	_trail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+func _build_sparks() -> void:
+	# little glowing flecks thrown off the staff tip while swinging
+	_sparks = CPUParticles3D.new()
+	_sparks.emitting = false
+	_sparks.amount = 28
+	_sparks.lifetime = 0.35
+	_sparks.local_coords = false
+	_sparks.direction = Vector3(0, 1, 0)
+	_sparks.spread = 180.0
+	_sparks.initial_velocity_min = 0.6
+	_sparks.initial_velocity_max = 1.8
+	_sparks.gravity = Vector3(0, -2.0, 0)
+	_sparks.scale_amount_min = 0.4
+	_sparks.scale_amount_max = 1.0
+	var q := QuadMesh.new()
+	q.size = Vector2(0.07, 0.07)
 	var m := StandardMaterial3D.new()
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.vertex_color_use_as_albedo = true
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_trail.material_override = m
-	_trail.top_level = true
-	add_child(_trail)
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	m.albedo_color = Color(0.92, 1.0, 0.6)
+	q.material = m
+	_sparks.mesh = q
+	var curve := Curve.new()
+	curve.add_point(Vector2(0.0, 1.0))
+	curve.add_point(Vector2(1.0, 0.0))
+	_sparks.scale_amount_curve = curve
+	_sparks.top_level = true
+	add_child(_sparks)
 
 
 func _grab_camera() -> void:
@@ -259,11 +285,21 @@ func _physics_process(delta: float) -> void:
 		var g := gravity * (fall_multiplier if velocity.y < 0.0 else 1.0)
 		velocity.y = maxf(velocity.y - g * delta, -max_fall_speed)
 
+	if on_floor:
+		_air_jumps_left = air_jumps
 	if _jump_buf > 0.0 and _coyote > 0.0:
 		velocity.y = jump_velocity
 		_jump_buf = 0.0
 		_coyote = 0.0
 		_squash = Vector2(0.86, 1.16)
+	elif Input.is_action_just_pressed("flutte_jump") and not on_floor and _coyote <= 0.0 and _air_jumps_left > 0:
+		# double jump: a fresh boost upward with a front flip and a puff of air
+		_air_jumps_left -= 1
+		_jump_buf = 0.0
+		velocity.y = double_jump_velocity
+		_squash = Vector2(0.8, 1.2)
+		_flip_t = 0.0
+		_puff()
 	if Input.is_action_just_released("flutte_jump") and velocity.y > 0.0:
 		velocity.y *= jump_cut
 
@@ -374,6 +410,7 @@ func _update_attack(delta: float) -> void:
 			_arm = lerpf(ARM_FOLLOW, ARM_BACK, _ease_in_out(_atk_t / T_SHEATHE))
 			if _atk_t >= T_SHEATHE:
 				_set_staff_in_hand(false)   # staff goes back on his back
+				_combo = 0
 				_start(Atk.RETURN)
 		Atk.RETURN:
 			# lower the arm down his back to rest (360 degrees == hanging down)
@@ -389,8 +426,10 @@ func _start(state: Atk) -> void:
 	_atk_from = _arm
 	if state == Atk.SWING:
 		_hit_list.clear()
-		_trail_pts.clear()
-		_sfx.pitch_scale = randf_range(0.92, 1.12)
+		_combo += 1
+		_spawn_slash(_combo % 2 == 0)
+		_sparks.emitting = true
+		_sfx.pitch_scale = randf_range(0.92, 1.12) + (0.12 if _combo % 2 == 0 else 0.0)
 		_sfx.play()
 		if is_on_floor():
 			velocity.x += facing * 1.6
@@ -507,31 +546,141 @@ func _process(delta: float) -> void:
 	_rig.scale = Vector3(-sx * _squash.x, _squash.y, 1.0)
 
 	_hitbox.position = Vector3(facing * 0.75, 0.95, 0.0)
-	_update_trail(delta)
+	_update_flip(delta)
+	if _sparks.emitting:
+		_sparks.global_position = _staff_hand.to_global(Vector3((1.0 - STAFF_GRIP) * STAFF_LEN * PX * STAFF_SCALE, 0, 0.03))
+		if _atk != Atk.SWING and _atk != Atk.FOLLOW:
+			_sparks.emitting = false
 	_update_camera(delta)
 
 
-func _update_trail(_delta: float) -> void:
-	var swinging := _atk == Atk.SWING or _atk == Atk.FOLLOW
-	if swinging and _staff_hand.visible:
-		var tip := _staff_hand.to_global(Vector3((1.0 - STAFF_GRIP) * STAFF_LEN * PX * STAFF_SCALE, 0, 0.02))
-		var mid := _staff_hand.to_global(Vector3(0.4 * STAFF_LEN * PX * STAFF_SCALE, 0, 0.02))
-		_trail_pts.append([tip, mid, 1.0])
-	for p in _trail_pts:
-		p[2] -= 0.16
-	while _trail_pts.size() > 0 and _trail_pts[0][2] <= 0.0:
-		_trail_pts.pop_front()
-	_trail_mesh.clear_surfaces()
-	if _trail_pts.size() < 2:
+func _update_flip(delta: float) -> void:
+	if _flip_t < 0.0:
+		_spin_root.rotation.z = 0.0
 		return
-	_trail_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
-	for p in _trail_pts:
-		var a: float = p[2]
-		_trail_mesh.surface_set_color(Color(1.0, 1.0, 0.9, 0.6 * a))
-		_trail_mesh.surface_add_vertex(p[0])
-		_trail_mesh.surface_set_color(Color(0.75, 1.0, 0.55, 0.0))
-		_trail_mesh.surface_add_vertex(p[1])
-	_trail_mesh.surface_end()
+	_flip_t += delta / 0.42
+	if _flip_t >= 1.0 or is_on_floor():
+		_flip_t = -1.0
+		_spin_root.rotation.z = 0.0
+		return
+	var k := 1.0 - pow(1.0 - _flip_t, 2.2)
+	_spin_root.rotation.z = -float(facing) * TAU * k   # forward somersault
+
+
+func _puff() -> void:
+	# a ring of air under his feet for the double jump
+	var ring := MeshInstance3D.new()
+	var q := QuadMesh.new()
+	q.size = Vector2(0.9, 0.9)
+	ring.mesh = q
+	var m := ShaderMaterial.new()
+	var sh := Shader.new()
+	sh.code = """
+shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_never, shadows_disabled;
+uniform float t = 0.0;
+void fragment() {
+	vec2 p = (UV - 0.5) * 2.0;
+	p.y *= 2.6;
+	float r = length(p);
+	float e = 0.55 + t * 0.38;
+	float ring = smoothstep(e - 0.16, e - 0.05, r) * (1.0 - smoothstep(e, e + 0.04, r));
+	ALBEDO = vec3(1.0, 1.0, 0.95);
+	ALPHA = ring * (1.0 - t) * 0.9;
+}
+"""
+	m.shader = sh
+	ring.material_override = m
+	ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	get_parent().add_child(ring)
+	ring.global_position = global_position + Vector3(0, 0.05, 0.05)
+	var tw := ring.create_tween()
+	tw.tween_method(func(v: float): m.set_shader_parameter("t", v), 0.0, 1.0, 0.35)
+	tw.parallel().tween_property(ring, "scale", Vector3(1.8, 1.8, 1.0), 0.35)
+	tw.tween_callback(ring.queue_free)
+
+
+# ======================================================================= swing effect
+## A glowing crescent "slash" that sweeps along the path of the staff:
+## bright white core on the outside edge, fading through lime and green into
+## ragged teal streaks on the inside. The second hit of a combo is pink & gold.
+func _spawn_slash(alt: bool) -> void:
+	if _slash_shader == null:
+		_slash_shader = Shader.new()
+		_slash_shader.code = SLASH_SHADER
+	var m := ShaderMaterial.new()
+	m.shader = _slash_shader
+	m.set_shader_parameter("seed", randf() * 100.0)
+	if alt:
+		m.set_shader_parameter("c_core", Color(1.0, 0.98, 0.9))
+		m.set_shader_parameter("c_mid", Color(1.0, 0.75, 0.3))
+		m.set_shader_parameter("c_edge", Color(1.0, 0.3, 0.6))
+	var q := QuadMesh.new()
+	q.size = Vector2(2.5, 2.5)
+	var slash := MeshInstance3D.new()
+	slash.mesh = q
+	slash.material_override = m
+	slash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# centred on the shoulder, in front of Flutte; it flips with him
+	slash.position = _p(SHOULDER, HIPS) + Vector3(0, 0, 0.08)
+	_upper.add_child(slash)
+	var tw := slash.create_tween()
+	tw.tween_method(func(v: float): m.set_shader_parameter("progress", v), 0.0, 1.0, T_SWING * 1.15).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_QUAD)
+	tw.tween_method(func(v: float): m.set_shader_parameter("fade", v), 1.0, 0.0, 0.26)
+	tw.parallel().tween_property(slash, "scale", Vector3(1.12, 1.12, 1.0), 0.26)
+	tw.tween_callback(slash.queue_free)
+
+
+const SLASH_SHADER := """
+shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_never, shadows_disabled;
+
+uniform float progress = 0.0;   // how far the slash has swept (0..1)
+uniform float fade = 1.0;
+uniform float a0 = 1.0;         // start angle (radians) - up behind his head
+uniform float a1 = 4.15;        // end angle - down in front of him
+uniform float radius = 0.88;
+uniform float width = 0.62;
+uniform float seed = 0.0;
+uniform vec3 c_core : source_color = vec3(1.0, 1.0, 0.9);
+uniform vec3 c_mid : source_color = vec3(0.78, 1.0, 0.25);
+uniform vec3 c_edge : source_color = vec3(0.05, 0.7, 0.55);
+
+float hash(float n) { return fract(sin(n * 12.9898 + seed) * 43758.5453); }
+float vnoise(float x) {
+	float i = floor(x);
+	float f = fract(x);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(hash(i), hash(i + 1.0), f);
+}
+
+void fragment() {
+	vec2 p = (UV - 0.5) * 2.0;
+	p.y = -p.y;
+	float r = length(p);
+	float a = atan(p.y, p.x);
+	float span = a1 - a0;
+	float da = mod(a - a0 + 6.2831853, 6.2831853);
+	float s = da / span;                         // 0 at the start of the arc, 1 at the end
+	if (s > progress || s > 1.0) {
+		discard;
+	}
+	float tail = clamp(s / max(progress, 0.001), 0.0, 1.0);   // 0 = oldest, 1 = staff tip
+	float th = width * pow(tail, 0.7) * (1.0 - 0.75 * smoothstep(0.86, 1.0, tail));
+	th = max(th, 0.0005);
+	float d = (radius - r) / th;                 // 0 on the outer edge, 1 on the inner edge
+	float rag = vnoise(s * 24.0) * 0.5 + vnoise(s * 57.0) * 0.3;
+	float inner = 1.0 - rag * (0.9 - 0.5 * tail);
+	float band = smoothstep(-0.12, 0.04, d) * (1.0 - smoothstep(inner - 0.3, inner, d));
+	vec3 col = mix(c_core, c_mid, smoothstep(0.04, 0.35, d));
+	col = mix(col, c_edge, smoothstep(0.35, 0.85, d));
+	float glow = (1.0 - smoothstep(0.0, 0.09, r - radius)) * step(radius, r) * 0.55;
+	col = mix(col, c_mid, step(radius, r));
+	float alpha = max(band, glow * tail) * smoothstep(0.0, 0.18, tail) * fade;
+	ALBEDO = col;
+	ALPHA = clamp(alpha, 0.0, 1.0);
+}
+"""
 
 
 func _update_camera(delta: float) -> void:
@@ -553,8 +702,8 @@ func _setup_input() -> void:
 	_add_action("flutte_left", [KEY_A, KEY_LEFT], [JOY_BUTTON_DPAD_LEFT], [JOY_AXIS_LEFT_X, -1.0])
 	_add_action("flutte_right", [KEY_D, KEY_RIGHT], [JOY_BUTTON_DPAD_RIGHT], [JOY_AXIS_LEFT_X, 1.0])
 	_add_action("flutte_jump", [KEY_SPACE, KEY_W, KEY_UP], [JOY_BUTTON_A])
-	_add_action("flutte_run", [KEY_SHIFT], [JOY_BUTTON_RIGHT_SHOULDER])
-	_add_action("flutte_attack", [KEY_J, KEY_K, KEY_F], [JOY_BUTTON_X])
+	_add_action("flutte_run", [KEY_SHIFT], [JOY_BUTTON_RIGHT_SHOULDER, JOY_BUTTON_LEFT_SHOULDER], [JOY_AXIS_TRIGGER_RIGHT, 1.0])
+	_add_action("flutte_attack", [KEY_J, KEY_K, KEY_F], [JOY_BUTTON_X, JOY_BUTTON_B, JOY_BUTTON_Y])
 
 
 static func _add_action(action: String, keys: Array, joy: Array, axis: Array = []) -> void:
