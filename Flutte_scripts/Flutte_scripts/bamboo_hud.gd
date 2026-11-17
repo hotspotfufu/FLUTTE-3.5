@@ -20,6 +20,8 @@ var _hp_shown := 1.0      # smooth fill
 var _hp_lag := 1.0        # white "damage" bar that catches up slowly
 var _flash := 0.0
 var _time := 0.0
+var _rocket_box: HBoxContainer
+var _rocket_label: Label
 
 
 func _ready() -> void:
@@ -61,9 +63,33 @@ func _ready() -> void:
 	rs.outline_color = Color(0.5, 0.0, 0.05)
 	_ready_label.label_settings = rs
 	_ready_label.text = "BEAM READY!  tap / Q"
-	_ready_label.position = Vector2(-6, 58)
+	_ready_label.position = Vector2(-6, 60)
 	_ready_label.visible = false
 	anchor.add_child(_ready_label)
+
+	# ---- firework rockets (shows once you pick up a cannon)
+	_rocket_box = HBoxContainer.new()
+	_rocket_box.position = Vector2(-30, 92)
+	_rocket_box.add_theme_constant_override("separation", 8)
+	_rocket_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_rocket_box.visible = false
+	anchor.add_child(_rocket_box)
+	var dir2: String = get_script().resource_path.get_base_dir()
+	var ci := TextureRect.new()
+	if ResourceLoader.exists(dir2 + "/firework_cannon.png"):
+		ci.texture = load(dir2 + "/firework_cannon.png")
+	ci.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	ci.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	ci.custom_minimum_size = Vector2(84, 46)
+	_rocket_box.add_child(ci)
+	_rocket_label = Label.new()
+	var rl := LabelSettings.new()
+	rl.font_size = 32
+	rl.outline_size = 9
+	rl.outline_color = Color(0.45, 0.25, 0.0)
+	_rocket_label.label_settings = rl
+	_rocket_label.text = "x 0  (G)"
+	_rocket_box.add_child(_rocket_label)
 
 	# ---- health bar, bottom middle
 	_health = Control.new()
@@ -84,6 +110,8 @@ func _connect_player() -> void:
 		if p != null and p.has_signal("bamboo_changed"):
 			_player = p
 			p.connect("bamboo_changed", _on_bamboo_changed)
+			if p.has_signal("rockets_changed"):
+				p.connect("rockets_changed", _on_rockets_changed)
 			if p.has_signal("health_changed"):
 				p.connect("health_changed", _on_health_changed)
 				_hp = float(p.get("health"))
@@ -130,6 +158,14 @@ func _on_bamboo_changed(total: int) -> void:
 	_box.scale = Vector2(1.45, 1.45) if (now_ready and not was_ready) else Vector2(1.25, 1.25)
 	create_tween().tween_property(_box, "scale", Vector2.ONE, 0.22)
 	_icon.queue_redraw()
+
+
+func _on_rockets_changed(count: int) -> void:
+	_rocket_box.visible = count > 0
+	_rocket_label.text = "x %d  (G)" % count
+	_rocket_box.pivot_offset = Vector2(60, 23)
+	_rocket_box.scale = Vector2(1.3, 1.3)
+	create_tween().tween_property(_rocket_box, "scale", Vector2.ONE, 0.2)
 
 
 func _on_health_changed(current: int, maximum: int) -> void:

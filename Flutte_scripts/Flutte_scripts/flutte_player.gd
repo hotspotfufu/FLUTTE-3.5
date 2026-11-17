@@ -12,6 +12,7 @@ extends CharacterBody3D
 ##            Space / W / Up = jump, press again in the air = double jump
 ##            J / F = swing the staff      K / L = tail spin attack
 ##            Q / E = red beam from the chest diamond (needs 50 bamboo)
+##            G / R = fire a firework rocket (pick up firework cannons from lanterns)
 ##            Gamepad: left stick / D-pad, A = jump, X = staff, B = tail spin,
 ##                     Y = red beam, RB/LB/RT = run
 ##            Touch: on-screen joystick + buttons (see flutte_touch_controls.gd)
@@ -19,6 +20,7 @@ extends CharacterBody3D
 signal bamboo_changed(total: int)
 signal attacked
 signal health_changed(current: int, maximum: int)
+signal rockets_changed(count: int)
 
 @export_group("Movement")
 @export var walk_speed := 4.2
@@ -96,6 +98,7 @@ const BEAM_LEN := 18.0
 
 var bamboo := 0
 var health := 100
+var rockets := 0
 var facing := 1                 # 1 = right, -1 = left
 var spawn_point := Vector3.ZERO
 
@@ -166,6 +169,13 @@ var _beam: MeshInstance3D
 var _beam_mat: ShaderMaterial
 var _beam_box: Area3D
 var _beam_sfx: AudioStreamPlayer
+var _beam_hit_list: Array = []
+
+# firework cannon
+var _cannon: Sprite3D
+var _cannon_t := 0.0
+var _fire_cd := 0.0
+var _last_safe := Vector3.ZERO
 
 
 func _ready() -> void:
@@ -184,6 +194,8 @@ func _ready() -> void:
 	_build_sparks()
 	_build_tail()
 	_build_beam()
+	_build_cannon()
+	_last_safe = global_position
 	_sfx = AudioStreamPlayer.new()
 	_sfx.stream = _make_whoosh()
 	_sfx.volume_db = -7.0
@@ -391,9 +403,13 @@ func _physics_process(delta: float) -> void:
 	_update_attack(delta)
 	_update_tail(delta)
 	_update_beam(delta)
+	_update_cannon(delta)
+	if is_on_floor() and _invuln <= 0.0:
+		_last_safe = global_position
 
 	if global_position.y < kill_y:
-		respawn()
+		global_position = _last_safe + Vector3(0, 0.5, 0)
+		velocity = Vector3.ZERO
 		take_damage(fall_damage, null, true)
 
 
@@ -442,9 +458,17 @@ func take_damage(amount: int, from: Node = null, ignore_invuln: bool = false) ->
 		var away := signf(global_position.x - (from as Node3D).global_position.x)
 		velocity = Vector3((away if away != 0.0 else -float(facing)) * 6.0, 6.0, 0)
 	if health <= 0:
+		# knocked out: Flutte gets back up with full health and a moment of safety
 		health = max_health
-		respawn()
+		_invuln = 2.2
+		velocity = Vector3(0, 7.0, 0)
+		_shake = 0.3
 	health_changed.emit(health, max_health)
+
+
+func add_rockets(amount: int) -> void:
+	rockets += amount
+	rockets_changed.emit(rockets)
 
 
 func heal(amount: int) -> void:
@@ -621,6 +645,9 @@ func _process(delta: float) -> void:
 		t_leg_b = -24.0
 		t_lean = 0.0       # stay level so the beam fires straight
 		k = minf(1.0, delta * 12.0)
+	if _cannon_t > 0.0:
+		t_arm = 80.0
+		t_lean = -4.0
 	if _atk != Atk.NONE:
 		t_arm = _arm
 		match _atk:
@@ -1019,6 +1046,7 @@ func _build_beam() -> void:
 	_beam_box = Area3D.new()
 	_beam_box.collision_layer = 16
 	_beam_box.collision_mask = 4 | 8
+	_beam_box.monitoring = true
 	_beam_box.monitorable = false
 	_beam_box.top_level = true
 	var cs := CollisionShape3D.new()
@@ -1056,6 +1084,7 @@ func _update_beam(delta: float) -> void:
 				_charge_fx.emitting = false
 				_beam.visible = true
 				_beam_tick = 0.0
+				_beam_hit_list.clear()
 		2:  # FIRE
 			var grow := clampf(_beam_t / 0.12, 0.0, 1.0)
 			_beam_mat.set_shader_parameter("reach", grow)
@@ -1084,13 +1113,17 @@ func _beam_hits() -> void:
 	var start := _gem.global_position
 	_beam_box.global_position = Vector3(start.x + facing * BEAM_LEN * 0.5, start.y, 0)
 	for b in _beam_box.get_overlapping_bodies():
-		if b != self and b.has_method("take_hit"):
-			b.call("take_hit", attack_damage * 5, self)
+		if b != self and b.has_method("take_hit") and not (b in _beam_hit_list):
+			_beam_hit_list.append(b)
+			b.call("take_hit", 8, self)          # one hit from the beam beats a ninja
 	for a in _beam_box.get_overlapping_areas():
+		if a in _beam_hit_list:
+			continue
+		_beam_hit_list.append(a)
 		if a.has_method("on_staff_hit"):
-			a.call("on_staff_hit", self)      # the beam scoops up bamboo too
+			a.call("on_staff_hit", self)      # the beam scoops up bamboo and smashes lanterns
 		elif a.has_method("take_hit"):
-			a.call("take_hit", attack_damage * 5, self)
+			a.call("take_hit", 8, self)
 
 
 const BEAM_SHADER := """
@@ -1156,15 +1189,52 @@ static func _make_beam_sound() -> AudioStreamWAV:
 	return w
 
 
+# ======================================================================= firework cannon
+func _build_cannon() -> void:
+	_cannon = Sprite3D.new()
+	_cannon.texture = load(_dir + "/firework_cannon.png")
+	_cannon.pixel_size = 0.8 / 344.0
+	_cannon.alpha_cut = SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS
+	# held in front of his belly; the panda mouth points forward (-x in the art)
+	_cannon.position = _p(Vector2(70, 470), HIPS) + Vector3(0, 0, 0.03)
+	_cannon.visible = false
+	_upper.add_child(_cannon)
+
+
+func _update_cannon(delta: float) -> void:
+	_fire_cd -= delta
+	if _cannon_t > 0.0:
+		_cannon_t -= delta
+		var kick := clampf(_cannon_t - 0.2, 0.0, 0.15) / 0.15     # recoil right after firing
+		_cannon.position = _p(Vector2(70, 470), HIPS) + Vector3(0.1 * kick, 0, 0.03)
+		if _cannon_t <= 0.0:
+			_cannon.visible = false
+	if Input.is_action_just_pressed("flutte_fire") and rockets > 0 and _fire_cd <= 0.0 and _beam_state == 0 and _tail_t < 0.0:
+		rockets -= 1
+		rockets_changed.emit(rockets)
+		_fire_cd = 0.3
+		_cannon_t = 0.5
+		_cannon.visible = true
+		var rocket: Area3D = load(_dir + "/firework_rocket.gd").new()
+		rocket.set("dir", facing)
+		get_parent().add_child(rocket)
+		var muzzle := _cannon.global_position + Vector3(facing * 0.45, 0.02, 0.05)
+		rocket.global_position = muzzle
+		_shake = maxf(_shake, 0.05)
+		velocity.x -= facing * 1.5
+		_dust(Vector3(facing * 0.9, 0.95, 0.15), Vector3(facing * 1.0, 0.4, 0))
+
+
 # ======================================================================= input
 func _setup_input() -> void:
 	_add_action("flutte_left", [KEY_A, KEY_LEFT], [JOY_BUTTON_DPAD_LEFT], [JOY_AXIS_LEFT_X, -1.0])
 	_add_action("flutte_right", [KEY_D, KEY_RIGHT], [JOY_BUTTON_DPAD_RIGHT], [JOY_AXIS_LEFT_X, 1.0])
 	_add_action("flutte_jump", [KEY_SPACE, KEY_W, KEY_UP], [JOY_BUTTON_A])
-	_add_action("flutte_run", [KEY_SHIFT], [JOY_BUTTON_RIGHT_SHOULDER, JOY_BUTTON_LEFT_SHOULDER], [JOY_AXIS_TRIGGER_RIGHT, 1.0])
+	_add_action("flutte_run", [KEY_SHIFT], [JOY_BUTTON_RIGHT_SHOULDER], [JOY_AXIS_TRIGGER_RIGHT, 1.0])
 	_add_action("flutte_attack", [KEY_J, KEY_F], [JOY_BUTTON_X])
 	_add_action("flutte_tail", [KEY_K, KEY_L], [JOY_BUTTON_B])
 	_add_action("flutte_special", [KEY_Q, KEY_E], [JOY_BUTTON_Y])
+	_add_action("flutte_fire", [KEY_G, KEY_R], [JOY_BUTTON_LEFT_SHOULDER])
 
 
 static func _add_action(action: String, keys: Array, joy: Array, axis: Array = []) -> void:

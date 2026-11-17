@@ -19,6 +19,7 @@ const JUMP_RADIUS := 96.0
 const STAFF_RADIUS := 80.0
 const TAIL_RADIUS := 72.0
 const BEAM_RADIUS := 70.0
+const FIRE_RADIUS := 66.0
 const TOP_RADIUS := 34.0
 const RUN_PUSH := 0.85
 const DEAD_ZONE := 0.18
@@ -35,6 +36,7 @@ var _jump_index := -1
 var _staff_index := -1
 var _tail_index := -1
 var _beam_index := -1
+var _fire_index := -1
 var _settings: Control
 var _btn_day: Button
 var _btn_night: Button
@@ -120,6 +122,16 @@ func _beam_pos() -> Vector2:
 	return Vector2(s.x - 170.0, s.y - 410.0)
 
 
+func _fire_pos() -> Vector2:
+	var s := _size()
+	return Vector2(s.x - 560.0, s.y - 230.0)
+
+
+func _has_rockets() -> bool:
+	var p := get_tree().get_first_node_in_group("player")
+	return p != null and int(p.get("rockets")) > 0
+
+
 func _beam_ready() -> bool:
 	var p := get_tree().get_first_node_in_group("player")
 	return p != null and p.has_method("special_ready") and bool(p.call("special_ready"))
@@ -187,6 +199,10 @@ func _handle_press(index: int, pos: Vector2) -> bool:
 		_tail_index = index
 		Input.action_press("flutte_tail")
 		return true
+	if _has_rockets() and pos.distance_to(_fire_pos()) <= FIRE_RADIUS + 16.0:
+		_fire_index = index
+		Input.action_press("flutte_fire")
+		return true
 	if _beam_ready() and pos.distance_to(_beam_pos()) <= BEAM_RADIUS + 18.0:
 		_beam_index = index
 		Input.action_press("flutte_special")
@@ -219,6 +235,10 @@ func _handle_release(index: int) -> bool:
 	if index == _beam_index:
 		_beam_index = -1
 		Input.action_release("flutte_special")
+		return true
+	if index == _fire_index:
+		_fire_index = -1
+		Input.action_release("flutte_fire")
 		return true
 	if index == _joy_index:
 		_joy_index = -1
@@ -283,7 +303,8 @@ func _toggle_controls() -> void:
 
 func _release_all() -> void:
 	_release_move()
-	for a in ["flutte_jump", "flutte_attack", "flutte_tail", "flutte_special"]:
+	_fire_index = -1
+	for a in ["flutte_jump", "flutte_attack", "flutte_tail", "flutte_special", "flutte_fire"]:
 		Input.action_release(a)
 
 
@@ -297,9 +318,9 @@ func _refresh_hint() -> void:
 		return
 	var t := "BAMBOO FOREST\n"
 	if controls_visible:
-		t += "Joystick: walk (push all the way to run)   JUMP (tap twice = double jump)   STAFF: swing   TAIL: spin attack   BEAM: at 50 bamboo\n"
-	t += "Keys: A/D walk   Shift run   Space jump (twice = double jump)   J staff   K tail spin   Q red beam (50 bamboo)   Esc settings   H hide help\n"
-	t += "Gamepad: stick walk   A jump   X staff   B tail spin   Y red beam   RB run   Start settings   Select hide help"
+		t += "Joystick: walk (push all the way to run)   JUMP (tap twice = double jump)   STAFF   TAIL: spin   FIRE: fireworks   BEAM: at 50 bamboo\n"
+	t += "Keys: A/D walk   Shift run   Space jump (twice = double jump)   J staff   K tail spin   G fireworks   Q red beam (50 bamboo)   Esc settings   H hide help\n"
+	t += "Gamepad: stick walk   A jump   X staff   B tail spin   LB fireworks   Y red beam   RB run   Start settings   Select hide help"
 	_hint.text = t
 	_hint.visible = help_visible
 
@@ -369,6 +390,17 @@ func _draw_controls() -> void:
 		var d := Vector2.from_angle(deg_to_rad(-170 + i * 55))
 		c.draw_circle(tp + Vector2(0, -6) + d * 34.0, 7.0, Color(0.6, 0.12, 0.08) if i % 2 == 0 else Color(1, 0.92, 0.82))
 	_text_center("TAIL", tp + Vector2(0, 44), 24, Color.WHITE)
+
+	# firework (only while you have rockets)
+	if _has_rockets():
+		var fp := _fire_pos()
+		c.draw_circle(fp, FIRE_RADIUS, Color(0.95, 0.65, 0.1, 0.85 if _fire_index != -1 else 0.6))
+		c.draw_arc(fp, FIRE_RADIUS, 0.0, TAU, 48, Color(1, 1, 1, 0.9), 5.0, true)
+		c.draw_rect(Rect2(fp + Vector2(-30, -18), Vector2(44, 20)), Color(0.75, 0.55, 0.15))
+		c.draw_circle(fp + Vector2(-30, -8), 12.0, Color(1, 1, 1))
+		for i in 3:
+			c.draw_circle(fp + Vector2(22 + i * 8, -14 - i * 6), 4.0 - i, Color(1, 0.95, 0.5))
+		_text_center("FIRE", fp + Vector2(0, 34), 24, Color.WHITE)
 
 	# beam (only once 50 bamboo are collected)
 	if _beam_ready():

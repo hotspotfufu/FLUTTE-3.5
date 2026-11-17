@@ -23,8 +23,6 @@ func _ready() -> void:
 	add_to_group("bamboo")
 	collision_layer = 8      # "Collectibles"
 	collision_mask = 2       # "Player"
-	monitorable = true
-	monitoring = true
 	var cs := CollisionShape3D.new()
 	var sph := SphereShape3D.new()
 	sph.radius = 0.38
