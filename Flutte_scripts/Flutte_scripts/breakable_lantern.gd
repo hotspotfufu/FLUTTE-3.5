@@ -6,7 +6,7 @@ extends Area3D
 @export var drops_cannon := false
 @export var yellow_sticks := 2
 
-const PX := 1.5 / 150.0
+const PX := 1.5 / 137.0
 var _dir := ""
 var _sprite: Sprite3D
 var _t := 0.0
@@ -50,7 +50,7 @@ func _ready() -> void:
 
 
 func _frame(i: int) -> void:
-	_sprite.region_rect = Rect2((i % 8) * 140, (i / 8) * 166, 140, 166)
+	_sprite.region_rect = Rect2((i % 8) * 144, (i / 8) * 154, 144, 154)
 
 
 func _process(delta: float) -> void:

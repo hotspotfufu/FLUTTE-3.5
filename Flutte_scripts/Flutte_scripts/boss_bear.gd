@@ -3,7 +3,7 @@ extends "flutte_enemy_base.gd"
 ## Attacks:  claw swipe combo (close), ground slam that sends purple shockwaves
 ## along the ground (jump over them), roar that blasts Flutte back, and a
 ## charging run when Flutte is far away. Gets faster and angrier at half health.
-## Damage taken: staff / tail = 1, firework = 3, red beam = 8.
+## Damage taken: staff / tail = 1, firework = 3, energy ball = 8.
 
 enum S { INTRO, IDLE, WALK, CHARGE, SWIPE, SLAM, ROAR, STAGGER, DEFEAT }
 
@@ -25,7 +25,7 @@ func _ready() -> void:
 	add_to_group("enemies")
 	add_to_group("boss")
 	collision_layer = 4
-	collision_mask = 1
+	collision_mask = 1 | 2      # solid: Flutte can't walk through him
 	hp = max_hp
 	var col := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
@@ -35,7 +35,8 @@ func _ready() -> void:
 	col.position = Vector3(0, 1.45, 0)
 	add_child(col)
 	sprite_z = 0.9
-	setup_sprite("boss_bear.png", Vector2i(202, 137), 8, 3.5, 124.0)
+	shadow_size = 2.3
+	setup_sprite("boss_bear.png", Vector2i(200, 156), 8, 3.6, 129.0)
 	add_anim("idle", [0, 1, 2], 4.0)
 	add_anim("walk", [3, 4, 5, 6, 7], 7.0)
 	add_anim("run", [8, 9, 10, 11], 11.0)
@@ -51,7 +52,7 @@ func _ready() -> void:
 	_aura_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_aura_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_aura_mat.albedo_texture = soft_texture()
-	_aura_mat.albedo_color = Color(0.6, 0.15, 0.9, 0.45)
+	_aura_mat.albedo_color = Color(0.6, 0.15, 0.9, 0.22)
 	var q := QuadMesh.new()
 	q.size = Vector2(4.0, 1.2)
 	_aura = MeshInstance3D.new()
@@ -158,7 +159,7 @@ func _physics_process(delta: float) -> void:
 			play("defeat")
 			if _t > 3.0:
 				_sprite.modulate.a = maxf(0.0, 1.0 - (_t - 3.0))
-				_aura_mat.albedo_color.a = maxf(0.0, 0.45 - (_t - 3.0))
+				_aura_mat.albedo_color.a = maxf(0.0, 0.22 - (_t - 3.0))
 			if _t > 4.0:
 				queue_free()
 
@@ -244,6 +245,7 @@ func take_hit(amount: int, from: Node = null) -> void:
 	if hp <= 0:
 		dead = true
 		collision_layer = 0
+		collision_mask = 1
 		_go(S.DEFEAT)
 		_shake(0.5)
 		for i in 4:
@@ -256,6 +258,8 @@ func take_hit(amount: int, from: Node = null) -> void:
 		_angry = true
 		_go(S.ROAR)          # gets angry at half health
 		return
+	if _s == S.IDLE or _s == S.WALK or _s == S.STAGGER:
+		knockback(from, 2.2, 0.16)     # a big bear only budges a little
 	_hits_since_stagger += 1
 	if _hits_since_stagger >= 6 and (_s == S.IDLE or _s == S.WALK):
 		_hits_since_stagger = 0

@@ -23,6 +23,10 @@ var _flash := 0.0
 var _passing := {}
 var _art_faces_right := true
 var sprite_z := 0.45
+var _knock_v := 0.0
+var _knock_t := 0.0
+var _shadow: MeshInstance3D
+var shadow_size := 0.9
 
 
 func setup_sprite(file: String, cell: Vector2i, cols: int, height_units: float, frame_px_height: float) -> void:
@@ -39,6 +43,45 @@ func setup_sprite(file: String, cell: Vector2i, cols: int, height_units: float, 
 	# drawn a little toward the camera so platforms never cover them
 	_sprite.position = Vector3(0, (cell.y * 0.5 - 2.0) * _sprite.pixel_size, sprite_z)
 	add_child(_sprite)
+	_shadow = make_blob_shadow(shadow_size)
+	add_child(_shadow)
+
+
+## soft dark oval on the ground under a character (keeps them grounded in 3D)
+static func make_blob_shadow(size: float) -> MeshInstance3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_texture = soft_texture()
+	m.albedo_color = Color(0.12, 0.08, 0.16, 0.38)
+	m.render_priority = -1
+	var q := PlaneMesh.new()
+	q.size = Vector2(size * 1.6, size * 0.9)
+	q.material = m
+	var mi := MeshInstance3D.new()
+	mi.mesh = q
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.position = Vector3(0, 0.03, 0)
+	mi.top_level = true
+	return mi
+
+
+## keep the shadow on the floor below us (it shrinks while we're in the air)
+func update_shadow() -> void:
+	if _shadow == null:
+		return
+	var from := global_position + Vector3(0, 0.3, 0)
+	var q := PhysicsRayQueryParameters3D.create(from, from + Vector3(0, -8.0, 0), 1)
+	q.exclude = [get_rid()]
+	var r := get_world_3d().direct_space_state.intersect_ray(q)
+	if r.is_empty() or dead:
+		_shadow.visible = false
+		return
+	_shadow.visible = true
+	var gy: float = (r.position as Vector3).y
+	_shadow.global_position = Vector3(global_position.x, gy + 0.03, 0.15)
+	var k := clampf(1.0 - (global_position.y - gy) / 4.0, 0.35, 1.0)
+	_shadow.scale = Vector3(k, 1, k)
 
 
 func add_anim(name: String, frames: Array, fps: float, loop: bool = true) -> void:
@@ -82,6 +125,7 @@ func tick_anim(delta: float) -> void:
 	_show_frame()
 	_sprite.flip_h = (facing < 0) == _art_faces_right
 	_flash = maxf(0.0, _flash - delta * 6.0)
+	update_shadow()
 	_sprite.modulate = Color(1, 1, 1).lerp(Color(1.0, 0.35, 0.35), _flash)
 
 
@@ -90,7 +134,21 @@ func apply_gravity(delta: float) -> void:
 		velocity.y = maxf(velocity.y - GRAVITY * delta, -24.0)
 
 
+## a short shove away from whoever hit us; overrides walking for a moment
+func knockback(from: Node, strength: float = 4.0, time: float = 0.22) -> void:
+	var away := float(-facing)
+	if from is Node3D:
+		var dx := global_position.x - (from as Node3D).global_position.x
+		if absf(dx) > 0.01:
+			away = signf(dx)
+	_knock_v = away * strength
+	_knock_t = time
+
+
 func move(delta: float) -> void:
+	if _knock_t > 0.0:
+		_knock_t -= delta
+		velocity.x = _knock_v * clampf(_knock_t / 0.22 + 0.3, 0.0, 1.0)
 	velocity.z = 0.0
 	_update_one_way()
 	move_and_slide()

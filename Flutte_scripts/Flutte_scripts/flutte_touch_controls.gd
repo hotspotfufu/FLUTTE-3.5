@@ -5,7 +5,7 @@ extends CanvasLayer
 ##   * JUMP button (bottom right) - tap again in the air to double jump.
 ##   * STAFF button - swing the bamboo staff.
 ##   * TAIL button - spin around and whip enemies with his tail.
-##   * BEAM button - appears at 50 bamboo: fires the red beam from his chest diamond.
+##   * BEAM button - appears at 50 bamboo: throws a ball of red energy from his chest diamond.
 ##   * Top-left buttons:  ?  = show / hide the instructions
 ##                        joystick icon = show / hide the touch controls
 ##                        gear = settings (day / night and the options above)
@@ -318,9 +318,9 @@ func _refresh_hint() -> void:
 		return
 	var t := "BAMBOO FOREST\n"
 	if controls_visible:
-		t += "Joystick: walk (push all the way to run)   JUMP (tap twice = double jump)   STAFF   TAIL: spin   FIRE: fireworks   BEAM: at 50 bamboo\n"
-	t += "Keys: A/D walk   Shift run   Space jump (twice = double jump)   J staff   K tail spin   G fireworks   Q red beam (50 bamboo)   Esc settings   H hide help\n"
-	t += "Gamepad: stick walk   A jump   X staff   B tail spin   LB fireworks   Y red beam   RB run   Start settings   Select hide help"
+		t += "Joystick: walk (push all the way to run)   JUMP (tap twice = double jump)   STAFF   TAIL: spin   FIRE: fireworks   BALL: at 50 bamboo\n"
+	t += "Keys: A/D walk   Shift run   Space jump (twice = double jump)   J staff   K tail spin   G fireworks   Q energy ball (50 bamboo)   Esc settings   H hide help\n"
+	t += "Gamepad: stick walk   A jump   X staff   B tail spin   LB fireworks   Y energy ball   RB run   Start settings   Select hide help"
 	_hint.text = t
 	_hint.visible = help_visible
 
@@ -411,7 +411,7 @@ func _draw_controls() -> void:
 		c.draw_arc(bp, BEAM_RADIUS, 0.0, TAU, 48, Color(1, 1, 1, 0.95), 5.0, true)
 		c.draw_colored_polygon(PackedVector2Array([bp + Vector2(-26, -10), bp + Vector2(-12, -30), bp + Vector2(2, -10), bp + Vector2(-12, 12)]), Color(1, 0.75, 0.8))
 		c.draw_rect(Rect2(bp + Vector2(4, -16), Vector2(34, 12)), Color(1, 0.95, 0.95))
-		_text_center("BEAM", bp + Vector2(0, 40), 24, Color.WHITE)
+		_text_center("BALL", bp + Vector2(0, 40), 24, Color.WHITE)
 
 
 func _round_button(p: Vector2, r: float, on: bool) -> void:

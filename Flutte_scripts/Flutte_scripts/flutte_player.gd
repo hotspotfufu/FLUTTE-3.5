@@ -11,10 +11,10 @@ extends CharacterBody3D
 ## Controls:  A/D or Left/Right = walk     hold Shift = run
 ##            Space / W / Up = jump, press again in the air = double jump
 ##            J / F = swing the staff      K / L = tail spin attack
-##            Q / E = red beam from the chest diamond (needs 50 bamboo)
+##            Q / E = throw a ball of red energy from the chest diamond (needs 50 bamboo)
 ##            G / R = fire a firework rocket (pick up firework cannons from lanterns)
 ##            Gamepad: left stick / D-pad, A = jump, X = staff, B = tail spin,
-##                     Y = red beam, RB/LB/RT = run
+##                     Y = energy ball, RB/LB/RT = run
 ##            Touch: on-screen joystick + buttons (see flutte_touch_controls.gd)
 
 signal bamboo_changed(total: int)
@@ -59,6 +59,7 @@ signal rockets_changed(count: int)
 
 # --- art layout (pixels in panda_side.png; the art faces left) ---
 const PX := 0.0024602                 # same pixel size as the level's panda reference
+const SIZE := 1.2                     # Flutte is drawn 20% bigger than the reference picture
 const ORIGIN := Vector2(215, 688)     # between the feet, on the ground
 const HIPS := Vector2(200, 586)
 const HIP_FRONT := Vector2(238, 590)
@@ -91,10 +92,9 @@ enum Atk { NONE, REACH, SWING, FOLLOW, REWIND, SHEATHE, RETURN }
 const GEM := Vector2(113, 405)          # the red diamond on his chest
 const SPECIAL_COST := 50
 const T_TAIL := 0.5
-const T_CHARGE := 0.55
-const T_BEAM := 1.25
-const T_BEAM_END := 0.25
-const BEAM_LEN := 18.0
+const T_CHARGE := 0.45
+const T_BEAM := 0.22
+const T_BEAM_END := 0.15
 
 var bamboo := 0
 var health := 100
@@ -157,25 +157,28 @@ var _tail_t := -1.0
 var _tail_hits: Array = []
 var _tail_box: Area3D
 
-# red beam: 0 = off, 1 = charging, 2 = firing, 3 = fading
+# energy ball: 0 = off, 1 = charging, 2 = throwing, 3 = recovering
 var _beam_state := 0
 var _beam_t := 0.0
-var _beam_tick := 0.0
 var _gem: Node3D
 var _gem_glow: MeshInstance3D
 var _gem_mat: StandardMaterial3D
 var _charge_fx: CPUParticles3D
-var _beam: MeshInstance3D
-var _beam_mat: ShaderMaterial
-var _beam_box: Area3D
 var _beam_sfx: AudioStreamPlayer
-var _beam_hit_list: Array = []
 
 # firework cannon
 var _cannon: Sprite3D
 var _cannon_t := 0.0
 var _fire_cd := 0.0
 var _last_safe := Vector3.ZERO
+var _knock_t := 0.0
+## the level director can hold the camera on one spot (boss arena) and pull it back
+var cam_lock := false
+var cam_lock_x := 0.0
+var cam_zoom := 0.0
+var _zoom_now := 0.0
+var _shadow: MeshInstance3D
+var _land_t := -1.0
 
 
 func _ready() -> void:
@@ -183,7 +186,7 @@ func _ready() -> void:
 	_dir = get_script().resource_path.get_base_dir()
 	spawn_point = global_position
 	collision_layer = 2            # "Player"
-	collision_mask = 1             # "World"
+	collision_mask = 1 | 4         # "World" + "Enemies": opponents are solid
 	floor_snap_length = 0.25
 	axis_lock_linear_z = true
 	_setup_input()
@@ -208,10 +211,10 @@ func _ready() -> void:
 func _build_collision() -> void:
 	var col := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
-	cap.radius = 0.33
-	cap.height = 1.5
+	cap.radius = 0.33 * SIZE
+	cap.height = 1.5 * SIZE
 	col.shape = cap
-	col.position = Vector3(0, 0.75, 0)
+	col.position = Vector3(0, 0.75 * SIZE, 0)
 	add_child(col)
 
 
@@ -240,11 +243,11 @@ func _pivot(parent: Node3D, point: Vector2, rel: Vector2) -> Node3D:
 func _build_rig() -> void:
 	_spin_root = Node3D.new()
 	_spin_root.name = "SpinRoot"
-	_spin_root.position = Vector3(0, 0.85, 0)
+	_spin_root.position = Vector3(0, 0.85 * SIZE, 0)
 	add_child(_spin_root)
 	_rig = Node3D.new()
 	_rig.name = "Rig"
-	_rig.position = Vector3(0, -0.85, 0)
+	_rig.position = Vector3(0, -0.85 * SIZE, 0)
 	_spin_root.add_child(_rig)
 
 	_leg_back = _pivot(_rig, HIP_BACK, ORIGIN)
@@ -283,10 +286,12 @@ func _build_hitbox() -> void:
 	_hitbox.monitorable = false
 	var cs := CollisionShape3D.new()
 	var sph := SphereShape3D.new()
-	sph.radius = attack_reach
+	sph.radius = attack_reach * SIZE
 	cs.shape = sph
 	_hitbox.add_child(cs)
 	add_child(_hitbox)
+	_shadow = load(_dir + "/flutte_enemy_base.gd").make_blob_shadow(1.0)
+	add_child(_shadow)
 
 
 func _build_sparks() -> void:
@@ -340,6 +345,7 @@ func _physics_process(delta: float) -> void:
 	if beaming:
 		dir = 0.0
 	_invuln = maxf(0.0, _invuln - delta)
+	_knock_t = maxf(0.0, _knock_t - delta)
 
 	_coyote = coyote_time if on_floor else _coyote - delta
 	_jump_buf = jump_buffer_time if Input.is_action_just_pressed("flutte_jump") else _jump_buf - delta
@@ -371,7 +377,10 @@ func _physics_process(delta: float) -> void:
 		velocity.y *= jump_cut
 
 	var target := dir * (run_speed if running else walk_speed)
-	if dir != 0.0:
+	if _knock_t > 0.0:
+		# knocked back: no steering until the shove is over
+		velocity.x = move_toward(velocity.x, 0.0, 9.0 * delta)
+	elif dir != 0.0:
 		var acc := ground_accel if on_floor else air_accel
 		velocity.x = move_toward(velocity.x, target, acc * delta)
 		if _atk != Atk.SWING and _atk != Atk.FOLLOW and _tail_t < 0.0:
@@ -385,6 +394,7 @@ func _physics_process(delta: float) -> void:
 		_fall_speed = -velocity.y
 	move_and_slide()
 	global_position.z = 0.0
+	_bounce_off_enemies()
 	if global_position.x < min_x or global_position.x > max_x:
 		global_position.x = clampf(global_position.x, min_x, max_x)
 		velocity.x = 0.0
@@ -392,7 +402,11 @@ func _physics_process(delta: float) -> void:
 	if is_on_floor() and not _was_floor:
 		# softer, springier landing; a bigger squash after a big fall
 		var f := clampf(_fall_speed / 16.0, 0.0, 1.0)
-		_squash = Vector2(1.12 + 0.14 * f, 0.88 - 0.12 * f)
+		_squash = Vector2(1.16 + 0.16 * f, 0.84 - 0.12 * f)
+		_land_t = 0.0
+		for i in 2:
+			var sd := -1.0 if i == 0 else 1.0
+			_dust(Vector3(sd * 0.3, 0.08, 0.12), Vector3(sd * randf_range(1.0, 1.8), 0.3, 0))
 		if f > 0.55:
 			_shake = maxf(_shake, 0.05 * f)
 			for i in 3:
@@ -433,6 +447,24 @@ func _update_one_way() -> void:
 			_passing[id] = true
 
 
+## Opponents are solid. If Flutte lands on one's head he hops off the far side
+## instead of standing there, so he can only beat them or jump over them.
+func _bounce_off_enemies() -> void:
+	for i in get_slide_collision_count():
+		var c := get_slide_collision(i)
+		var o := c.get_collider() as Node
+		if o == null or not o.is_in_group("enemies"):
+			continue
+		if c.get_normal().y > 0.5:
+			var side := signf(global_position.x - (o as Node3D).global_position.x)
+			if side == 0.0:
+				side = float(facing)
+			velocity = Vector3(side * 5.0, 6.5, 0)
+			_knock_t = 0.18
+			_squash = Vector2(0.85, 1.15)
+			return
+
+
 func respawn() -> void:
 	global_position = spawn_point
 	velocity = Vector3.ZERO
@@ -456,13 +488,18 @@ func take_damage(amount: int, from: Node = null, ignore_invuln: bool = false) ->
 	_shake = maxf(_shake, 0.12)
 	if from is Node3D:
 		var away := signf(global_position.x - (from as Node3D).global_position.x)
-		velocity = Vector3((away if away != 0.0 else -float(facing)) * 6.0, 6.0, 0)
+		velocity = Vector3((away if away != 0.0 else -float(facing)) * 5.5, 5.0, 0)
+		_knock_t = 0.3
 	if health <= 0:
-		# knocked out: Flutte gets back up with full health and a moment of safety
+		# knocked out: Flutte wakes up at the last checkpoint with full health
 		health = max_health
-		_invuln = 2.2
-		velocity = Vector3(0, 7.0, 0)
+		_invuln = 2.5
+		global_position = spawn_point + Vector3(0, 0.4, 0)
+		_last_safe = global_position
+		velocity = Vector3(0, 5.0, 0)
+		_knock_t = 0.0
 		_shake = 0.3
+		get_tree().call_group("flutte_director", "on_player_ko")
 	health_changed.emit(health, max_health)
 
 
@@ -602,12 +639,14 @@ func _process(delta: float) -> void:
 
 	if not on_floor:
 		if velocity.y > 0.0:
-			t_leg_f = 28.0
-			t_leg_b = -22.0
-			t_lift_f = 0.10
-			t_lift_b = 0.05
-			t_arm = -55.0
-			t_lean = 6.0
+			# rising: legs kick, arm swings up; tucks in tighter near the top of the jump
+			var apex := 1.0 - clampf(velocity.y / jump_velocity, 0.0, 1.0)
+			t_leg_f = lerpf(30.0, 46.0, apex)
+			t_leg_b = lerpf(-26.0, -8.0, apex)
+			t_lift_f = lerpf(0.10, 0.18, apex)
+			t_lift_b = lerpf(0.05, 0.14, apex)
+			t_arm = lerpf(-50.0, -80.0, apex)
+			t_lean = lerpf(8.0, 2.0, apex)
 		else:
 			# coming down: the faster he falls, the more his legs rise up
 			var f := clampf(-velocity.y / 12.0, 0.0, 1.0)
@@ -620,16 +659,20 @@ func _process(delta: float) -> void:
 			k = minf(1.0, delta * 9.0)
 	elif speed > 0.3:
 		_phase += delta * (8.5 + speed * 1.7)
-		var amp := 34.0 if running else 26.0
+		var amp := 40.0 if running else 28.0
 		var s := sin(_phase)
 		var c := cos(_phase)
 		t_leg_f = amp * s
 		t_leg_b = -amp * s
-		t_lift_f = maxf(0.0, c) * 0.09
-		t_lift_b = maxf(0.0, -c) * 0.09
-		t_bob = (1.0 - absf(s)) * (0.07 if running else 0.05)
-		t_arm = -s * (30.0 if running else 20.0)
-		t_lean = 16.0 if running else 4.0
+		t_lift_f = maxf(0.0, c) * (0.13 if running else 0.09)
+		t_lift_b = maxf(0.0, -c) * (0.13 if running else 0.09)
+		t_bob = (1.0 - absf(s)) * (0.10 if running else 0.055)
+		t_arm = -s * (42.0 if running else 22.0)
+		t_lean = 18.0 if running else 5.0
+		# a springy push-off on every step while running
+		if running:
+			_squash.y = minf(_squash.y, 1.0 - 0.05 * absf(s))
+			_squash.x = maxf(_squash.x, 1.0 + 0.04 * absf(s))
 		k = 1.0     # follow the walk cycle exactly
 		if running:
 			_dust_t -= delta
@@ -639,12 +682,25 @@ func _process(delta: float) -> void:
 	else:
 		_phase = 0.0
 
+	# landing: knees bend for a moment before he straightens up
+	if _land_t >= 0.0:
+		_land_t += delta
+		if _land_t < 0.16 and on_floor and speed < 3.0:
+			var b := sin(_land_t / 0.16 * PI)
+			t_leg_f = 24.0 * b
+			t_leg_b = -18.0 * b
+			t_bob = -0.07 * b
+			t_arm = -25.0 * b
+			k = 1.0
+		elif _land_t >= 0.16:
+			_land_t = -1.0
+
 	if _beam_state == 1 or _beam_state == 2:
-		t_arm = 85.0 if _beam_state == 2 else 40.0
+		t_arm = 100.0 if _beam_state == 2 else -70.0     # wind up, then throw
 		t_leg_f = 18.0
 		t_leg_b = -24.0
-		t_lean = 0.0       # stay level so the beam fires straight
-		k = minf(1.0, delta * 12.0)
+		t_lean = 14.0 if _beam_state == 2 else -8.0
+		k = minf(1.0, delta * 22.0)
 	if _cannon_t > 0.0:
 		t_arm = 80.0
 		t_lean = -4.0
@@ -679,9 +735,10 @@ func _process(delta: float) -> void:
 	_turn = move_toward(_turn, float(facing), delta * 12.0)
 	_squash = _squash.lerp(Vector2.ONE, minf(1.0, delta * 10.0))
 	var sx := _turn if absf(_turn) > 0.08 else 0.08 * signf(_turn + 0.0001)
-	_rig.scale = Vector3(-sx * _squash.x, _squash.y, 1.0)
+	_rig.scale = Vector3(-sx * _squash.x, _squash.y, 1.0) * SIZE
 
-	_hitbox.position = Vector3(facing * 0.75, 0.95, 0.0)
+	_hitbox.position = Vector3(facing * 0.75, 0.95, 0.0) * SIZE
+	_update_shadow()
 	_rig.visible = _invuln <= 0.0 or fmod(_invuln, 0.14) > 0.05     # blink after getting hurt
 	var tint := Color(1.0, 0.55, 0.55) if _invuln > 0.75 else Color.WHITE
 	for sp in _sprites:
@@ -692,6 +749,21 @@ func _process(delta: float) -> void:
 		if _atk != Atk.SWING and _atk != Atk.FOLLOW:
 			_sparks.emitting = false
 	_update_camera(delta)
+
+
+func _update_shadow() -> void:
+	var from := global_position + Vector3(0, 0.3, 0)
+	var q := PhysicsRayQueryParameters3D.create(from, from + Vector3(0, -8.0, 0), 1)
+	q.exclude = [get_rid()]
+	var r := get_world_3d().direct_space_state.intersect_ray(q)
+	if r.is_empty():
+		_shadow.visible = false
+		return
+	_shadow.visible = true
+	var gy: float = (r.position as Vector3).y
+	_shadow.global_position = Vector3(global_position.x, gy + 0.03, 0.15)
+	var sk := clampf(1.0 - (global_position.y - gy) / 4.0, 0.35, 1.0)
+	_shadow.scale = Vector3(sk, 1, sk)
 
 
 func _update_flip(delta: float) -> void:
@@ -832,10 +904,13 @@ func _update_camera(delta: float) -> void:
 		lo = float(_cam.get("min_x"))
 		hi = float(_cam.get("max_x"))
 	var tx := clampf(global_position.x + facing * camera_lead, lo, hi)
-	var ty := _cam_base.y + maxf(0.0, global_position.y - 2.5) * 0.7
+	if cam_lock:
+		tx = cam_lock_x
+	_zoom_now = lerpf(_zoom_now, cam_zoom, minf(1.0, delta * 1.5))
+	var ty := _cam_base.y + maxf(0.0, global_position.y - 2.5) * 0.7 + _zoom_now * 0.12
 	_cam_pos.x = lerpf(_cam_pos.x, tx, minf(1.0, delta * 4.0))
 	_cam_pos.y = lerpf(_cam_pos.y, ty, minf(1.0, delta * 3.0))
-	_cam_pos.z = _cam_base.z
+	_cam_pos.z = _cam_base.z + _zoom_now
 	_shake = move_toward(_shake, 0.0, delta * 0.6)
 	var jitter := Vector3(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0), 0.0) * _shake
 	_cam.global_position = _cam_pos + jitter
@@ -907,6 +982,7 @@ func _update_tail(delta: float) -> void:
 			_sfx.play()
 			if is_on_floor():
 				velocity.y = 4.5     # little hop into the spin
+			_squash = Vector2(1.18, 0.84)
 			_spawn_tail_ring()
 			attacked.emit()
 		return
@@ -914,6 +990,8 @@ func _update_tail(delta: float) -> void:
 	var k := clampf(_tail_t / T_TAIL, 0.0, 1.0)
 	# two full turns, fast at the start and easing out
 	_spin_root.rotation.y = -float(facing) * TAU * 2.0 * _ease_out(k)
+	_spin_root.rotation.x = sin(k * PI) * 0.18          # tips back a little while whirling
+	_squash = _squash.lerp(Vector2(0.92, 1.1), 0.25 * (1.0 - k))
 	if k > 0.08 and k < 0.85:
 		for b in _tail_box.get_overlapping_bodies():
 			_tail_hit(b)
@@ -922,6 +1000,7 @@ func _update_tail(delta: float) -> void:
 	if k >= 1.0:
 		_tail_t = -1.0
 		_spin_root.rotation.y = 0.0
+		_spin_root.rotation.x = 0.0
 
 
 func _tail_hit(target: Node) -> void:
@@ -988,7 +1067,7 @@ void fragment() {
 """
 
 
-# ======================================================================= red beam
+# ======================================================================= energy ball
 func _build_beam() -> void:
 	# glow on the chest diamond
 	_gem = _pivot(_upper, GEM, HIPS)
@@ -1028,34 +1107,6 @@ func _build_beam() -> void:
 	_charge_fx.mesh = pq
 	_gem.add_child(_charge_fx)
 
-	# the beam itself: a long glowing strip that shoots forward from the diamond
-	_beam_mat = ShaderMaterial.new()
-	var sh := Shader.new()
-	sh.code = BEAM_SHADER
-	_beam_mat.shader = sh
-	var bq := QuadMesh.new()
-	bq.size = Vector2(BEAM_LEN, 2.4)
-	_beam = MeshInstance3D.new()
-	_beam.mesh = bq
-	_beam.material_override = _beam_mat
-	_beam.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_beam.position = Vector3(-BEAM_LEN * 0.5, 0, 0.02)   # the art faces -x, so forward is -x here
-	_beam.visible = false
-	_gem.add_child(_beam)
-
-	_beam_box = Area3D.new()
-	_beam_box.collision_layer = 16
-	_beam_box.collision_mask = 4 | 8
-	_beam_box.monitoring = true
-	_beam_box.monitorable = false
-	_beam_box.top_level = true
-	var cs := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(BEAM_LEN, 1.6, 2.0)
-	cs.shape = box
-	_beam_box.add_child(cs)
-	add_child(_beam_box)
-
 	_beam_sfx = AudioStreamPlayer.new()
 	_beam_sfx.stream = _make_beam_sound()
 	_beam_sfx.volume_db = -6.0
@@ -1073,91 +1124,38 @@ func _update_beam(delta: float) -> void:
 		return
 	_beam_t += delta
 	match _beam_state:
-		1:  # charge up: the diamond glows brighter and brighter
+		1:  # charge up: a ball of red energy gathers on the chest diamond
 			var k := clampf(_beam_t / T_CHARGE, 0.0, 1.0)
 			_gem_mat.albedo_color.a = k
-			_gem_glow.scale = Vector3.ONE * (0.4 + 0.8 * k + sin(_beam_t * 40.0) * 0.08)
+			_gem_glow.scale = Vector3.ONE * (0.4 + 0.9 * k + sin(_beam_t * 40.0) * 0.08)
 			_shake = maxf(_shake, 0.02 * k)
 			if _beam_t >= T_CHARGE:
 				_beam_state = 2
 				_beam_t = 0.0
 				_charge_fx.emitting = false
-				_beam.visible = true
-				_beam_tick = 0.0
-				_beam_hit_list.clear()
-		2:  # FIRE
-			var grow := clampf(_beam_t / 0.12, 0.0, 1.0)
-			_beam_mat.set_shader_parameter("reach", grow)
-			_beam_mat.set_shader_parameter("width", grow)
-			_gem_mat.albedo_color.a = 1.0
-			_gem_glow.scale = Vector3.ONE * (1.6 + sin(_beam_t * 50.0) * 0.15)
-			_shake = maxf(_shake, 0.1)
-			_beam_tick -= delta
-			if _beam_tick <= 0.0:
-				_beam_tick = 0.1
-				_beam_hits()
+				_throw_orb()
+		2:  # THROW: the arm whips forward and the ball flies off
+			_gem_mat.albedo_color.a = 1.0 - clampf(_beam_t / 0.08, 0.0, 1.0)
 			if _beam_t >= T_BEAM:
 				_beam_state = 3
 				_beam_t = 0.0
-		3:  # fade out
-			var k := 1.0 - clampf(_beam_t / T_BEAM_END, 0.0, 1.0)
-			_beam_mat.set_shader_parameter("width", k)
-			_gem_mat.albedo_color.a = k
+		3:  # recover
+			_gem_mat.albedo_color.a = 0.0
 			if _beam_t >= T_BEAM_END:
 				_beam_state = 0
-				_beam.visible = false
-				_gem_mat.albedo_color.a = 0.0
 
 
-func _beam_hits() -> void:
-	var start := _gem.global_position
-	_beam_box.global_position = Vector3(start.x + facing * BEAM_LEN * 0.5, start.y, 0)
-	for b in _beam_box.get_overlapping_bodies():
-		if b != self and b.has_method("take_hit") and not (b in _beam_hit_list):
-			_beam_hit_list.append(b)
-			b.call("take_hit", 8, self)          # one hit from the beam beats a ninja
-	for a in _beam_box.get_overlapping_areas():
-		if a in _beam_hit_list:
-			continue
-		_beam_hit_list.append(a)
-		if a.has_method("on_staff_hit"):
-			a.call("on_staff_hit", self)      # the beam scoops up bamboo and smashes lanterns
-		elif a.has_method("take_hit"):
-			a.call("take_hit", 8, self)
+func _throw_orb() -> void:
+	var orb: Area3D = load(_dir + "/energy_orb.gd").new()
+	orb.set("dir", float(facing))
+	orb.set("thrower", self)
+	get_parent().add_child(orb)
+	var from := _gem.global_position
+	orb.global_position = Vector3(from.x + facing * 0.45, from.y + 0.05, 0.0)
+	_squash = Vector2(1.12, 0.9)
+	_shake = maxf(_shake, 0.06)
+	velocity.x -= facing * 1.5      # a little push back from the throw
 
-
-const BEAM_SHADER := """
-shader_type spatial;
-render_mode unshaded, cull_disabled, depth_draw_never, shadows_disabled;
-uniform float reach = 0.0;    // how far the beam has shot out (0..1)
-uniform float width = 1.0;
-float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float noise(vec2 p) {
-	vec2 i = floor(p);
-	vec2 f = fract(p);
-	f = f * f * (3.0 - 2.0 * f);
-	return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-}
-void fragment() {
-	float u = 1.0 - UV.x;                 // 0 at the diamond, 1 at the far end
-	float v = (UV.y - 0.5) * 2.0;
-	if (u > reach) { discard; }
-	float wob = 1.0 + 0.12 * sin(u * 60.0 - TIME * 40.0) + 0.08 * sin(u * 23.0 + TIME * 25.0);
-	float w = max(width * wob * (0.55 + 0.45 * smoothstep(0.0, 0.08, u)), 0.001);
-	float d = abs(v) / w;
-	float core = exp(-d * d * 18.0);
-	float body = exp(-d * d * 4.0);
-	float halo = exp(-d * d * 2.2) * 0.6;
-	float streak = noise(vec2(u * 30.0 - TIME * 18.0, v * 4.0));
-	body *= 0.75 + 0.5 * streak;
-	vec3 col = vec3(0.55, 0.0, 0.08) * halo + vec3(1.0, 0.12, 0.2) * body + vec3(1.0, 0.9, 0.9) * core;
-	float tip = 1.0 - smoothstep(reach - 0.04, reach, u);
-	float edge = 1.0 - smoothstep(0.55, 1.0, abs(v));      // fade out well before the strip's edge
-	float a = clamp(halo * 0.7 + body + core, 0.0, 1.0) * tip * edge;
-	ALBEDO = col / max(a, 0.001);
-	ALPHA = a;
-}
-"""
 
 
 static func _make_beam_sound() -> AudioStreamWAV:

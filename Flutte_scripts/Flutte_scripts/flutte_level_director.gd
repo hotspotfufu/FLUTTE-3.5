@@ -2,9 +2,11 @@ extends CanvasLayer
 ## Runs the bamboo forest's battles:
 ##   * places 15 ninja opponents and the breakable lanterns
 ##   * shows "NINJAS LEFT" at the top of the screen
-##   * when all 15 are defeated: "THE SHADOW BEAR AWAKENS!" and the boss
-##     drops in, with his own health bar at the top of the screen
-##   * beat the bear: "STAGE CLEAR!"
+##     (some patrol, some stand guard and block, some ambush from the bamboo)
+##   * lights the checkpoints Flutte passes; a knock-out sends him back to the last one
+##   * at the end of the path is the boss arena: walk in and CLAUS THE BEAR
+##     drops down, with his own health bar; the camera holds on the arena
+##   * beat Claus: "STAGE CLEAR!" and Flutte's victory hops
 
 const NINJA_COUNT := 15
 # x positions for ninjas on the ground; the rest stand on platforms
@@ -29,6 +31,16 @@ var _sub: Label
 var _boss_bar: Control
 var _boss_started := false
 var _cleared := false
+
+## the boss waits in his own arena at the far end of the path
+const ARENA_X0 := 108.0
+const ARENA_X1 := 127.0
+const CHECK_X := [33.0, 73.0]
+const AMBUSH_SPOTS := [2, 5, 8]      # which ground ninjas drop from the bamboo
+const GUARD_SPOTS := [3, 6, 9]       # which ones stand guard and block a lot
+var _checks: Array = []
+var _check_on: Array = []
+var _hop_t := -1.0
 
 
 func _ready() -> void:
@@ -60,6 +72,11 @@ func _spawn_all() -> void:
 	for i in NINJA_COUNT:
 		var n: CharacterBody3D = ninja.new()
 		n.name = "Ninja%02d" % (i + 1)
+		if i in AMBUSH_SPOTS:
+			n.set("role", "ambush")
+			spots[i] = spots[i] + Vector3(0, 8.5, 0)
+		elif i in GUARD_SPOTS:
+			n.set("role", "guard")
 		holder.add_child(n)
 		n.global_position = spots[i]
 		n.set("home", spots[i])
@@ -85,8 +102,13 @@ func _spawn_all() -> void:
 				l.set("yellow_sticks", 3)
 				holder.add_child(l)
 				l.global_position = p.global_position + Vector3(0, 1.55, 0)
+	for cx in CHECK_X:
+		_checks.append(_make_checkpoint(cx))
+		_check_on.append(false)
+	_make_arena_gate(ARENA_X0 - 1.2)
+	_make_arena_gate(ARENA_X1 + 0.6)
 	_update_counter()
-	_show_banner("DEFEAT THE 15 NINJAS!", "Smash lanterns for health and fireworks", 3.0)
+	_show_banner("THE BAMBOO FOREST", "Fight through the ninjas - Claus the Bear waits at the end!", 3.5)
 
 
 func on_enemy_defeated(_enemy: Node) -> void:
@@ -95,26 +117,39 @@ func on_enemy_defeated(_enemy: Node) -> void:
 	defeated_count += 1
 	_update_counter()
 	if defeated_count >= NINJA_COUNT and not _boss_started:
-		_boss_started = true
-		_start_boss.call_deferred()
+		var p := get_tree().get_first_node_in_group("player")
+		if p and p.has_method("heal"):
+			p.call("heal", 999)
+		_show_banner("ALL 15 NINJAS DEFEATED!", "Full health! Now find Claus at the end of the path", 3.0)
 
 
 func _start_boss() -> void:
-	await get_tree().create_timer(1.2).timeout
-	_show_banner("THE SHADOW BEAR AWAKENS!", "Jump over his shockwaves!", 3.0)
+	# lock Flutte into the arena, hold the camera on it and pull back a little
 	var p := get_tree().get_first_node_in_group("player") as Node3D
-	var x := 50.0
-	var f := 1
+	for wx in [ARENA_X0 - 1.0, ARENA_X1 + 0.4]:
+		var wall := StaticBody3D.new()
+		wall.collision_layer = 1
+		var cs := CollisionShape3D.new()
+		var box := BoxShape3D.new()
+		box.size = Vector3(1.0, 30.0, 4.0)
+		cs.shape = box
+		wall.add_child(cs)
+		level.add_child(wall)
+		wall.global_position = Vector3(wx, 14.0, 0)
 	if p:
-		f = int(p.get("facing"))
-		x = p.global_position.x + f * 8.0
-		if x > 98.0 or x < 2.0:
-			x = p.global_position.x - f * 8.0
-	await get_tree().create_timer(1.0).timeout
+		p.set("min_x", ARENA_X0 - 0.2)
+		p.set("max_x", ARENA_X1 - 0.4)
+		p.set("spawn_point", Vector3(ARENA_X0 + 1.5, 0.2, 0))
+		p.set("cam_lock", true)
+		p.set("cam_lock_x", (ARENA_X0 + ARENA_X1) * 0.5)
+		p.set("cam_zoom", 4.5)
+	_show_banner("CLAUS THE BEAR!", "Jump over his shockwaves!", 3.0)
+	var x := ARENA_X1 - 5.0
+	await get_tree().create_timer(1.6).timeout
 	boss = load(_dir + "/boss_bear.gd").new()
-	boss.name = "ShadowBear"
+	boss.name = "ClausTheBear"
 	level.add_child(boss)
-	(boss as Node3D).global_position = Vector3(clampf(x, 2.0, 98.0), 7.0, 0)
+	(boss as Node3D).global_position = Vector3(x, 7.0, 0)
 	_top.visible = false
 	_boss_bar.visible = true
 
@@ -131,8 +166,105 @@ func on_boss_defeated(_b: Node) -> void:
 	boss_hp = 0
 	await get_tree().create_timer(1.5).timeout
 	_show_banner("STAGE CLEAR!", "The bamboo forest is safe again", 6.0)
+	_hop_t = 0.0                       # Flutte's victory hops
 	await get_tree().create_timer(3.0).timeout
 	_boss_bar.visible = false
+
+
+func on_player_ko() -> void:
+	_show_banner("KNOCKED OUT!", "Back to the last checkpoint", 1.8)
+
+
+## a bamboo post with a paper lamp that lights up when Flutte passes it
+func _make_checkpoint(x: float) -> MeshInstance3D:
+	var post := MeshInstance3D.new()
+	var pm := CylinderMesh.new()
+	pm.top_radius = 0.07
+	pm.bottom_radius = 0.09
+	pm.height = 2.6
+	post.mesh = pm
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.55, 0.72, 0.3)
+	post.material_override = m
+	level.add_child(post)
+	post.global_position = Vector3(x, 1.3, -0.9)
+	var flag := MeshInstance3D.new()
+	var fm := PrismMesh.new()
+	fm.size = Vector3(0.7, 0.5, 0.03)
+	fm.left_to_right = 0.0
+	flag.mesh = fm
+	var f := StandardMaterial3D.new()
+	f.albedo_color = Color(0.9, 0.15, 0.2)
+	f.cull_mode = BaseMaterial3D.CULL_DISABLED
+	flag.material_override = f
+	flag.rotation.z = -PI * 0.5
+	flag.position = Vector3(0.32, 0.9, 0)
+	post.add_child(flag)
+	var lamp := MeshInstance3D.new()
+	var lm := SphereMesh.new()
+	lm.radius = 0.2
+	lm.height = 0.46
+	lamp.mesh = lm
+	var l := StandardMaterial3D.new()
+	l.albedo_color = Color(0.75, 0.72, 0.68)
+	l.emission_enabled = true
+	l.emission = Color(1.0, 0.7, 0.3)
+	l.emission_energy_multiplier = 0.0
+	lamp.material_override = l
+	lamp.position = Vector3(0, 1.5, 0)
+	post.add_child(lamp)
+	return lamp
+
+
+## two tall stone pillars mark each end of the boss arena
+func _make_arena_gate(x: float) -> void:
+	for z in [-1.9, 1.9]:
+		var mi := MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		cm.top_radius = 0.32
+		cm.bottom_radius = 0.42
+		cm.height = 4.2
+		mi.mesh = cm
+		var m := StandardMaterial3D.new()
+		m.albedo_color = Color(0.56, 0.52, 0.6)
+		m.roughness = 0.9
+		mi.material_override = m
+		level.add_child(mi)
+		mi.global_position = Vector3(x, 2.1, z)
+		var cap := MeshInstance3D.new()
+		var sm := SphereMesh.new()
+		sm.radius = 0.36
+		sm.height = 0.72
+		cap.mesh = sm
+		var c := StandardMaterial3D.new()
+		c.albedo_color = Color(0.85, 0.2, 0.25)
+		c.emission_enabled = true
+		c.emission = Color(1.0, 0.35, 0.3)
+		c.emission_energy_multiplier = 0.8
+		cap.material_override = c
+		cap.position = Vector3(0, 2.3, 0)
+		mi.add_child(cap)
+
+
+func _level_tick(delta: float) -> void:
+	var p := get_tree().get_first_node_in_group("player") as CharacterBody3D
+	if p == null or level == null:
+		return
+	for i in _checks.size():
+		if not _check_on[i] and p.global_position.x > CHECK_X[i]:
+			_check_on[i] = true
+			p.set("spawn_point", Vector3(CHECK_X[i], 0.2, 0))
+			var mat := (_checks[i] as MeshInstance3D).material_override as StandardMaterial3D
+			mat.albedo_color = Color(1.0, 0.8, 0.5)
+			mat.emission_energy_multiplier = 3.0
+			_show_banner("CHECKPOINT!", "", 1.2)
+	if not _boss_started and p.global_position.x > ARENA_X0 and p.is_on_floor():
+		_boss_started = true
+		_start_boss.call_deferred()
+	if _hop_t >= 0.0:
+		_hop_t += delta
+		if _hop_t < 4.0 and p.is_on_floor() and fmod(_hop_t, 0.7) < 0.1:
+			p.velocity.y = 7.5
 
 
 # ------------------------------------------------------------------ UI
@@ -149,7 +281,7 @@ func _build_ui() -> void:
 	_ninja_icon = TextureRect.new()
 	var at := AtlasTexture.new()
 	at.atlas = load(_dir + "/enemy_ninja.png")
-	at.region = Rect2(0, 0, 252, 138)
+	at.region = Rect2(0, 0, 255, 146)
 	_ninja_icon.texture = at
 	_ninja_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_ninja_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
@@ -228,6 +360,7 @@ func _show_banner(title: String, sub: String, secs: float) -> void:
 
 
 func _process(delta: float) -> void:
+	_level_tick(delta)
 	if _boss_bar.visible:
 		var target := float(boss_hp) / float(maxi(boss_max, 1))
 		_boss_shown = lerpf(_boss_shown, target, minf(1.0, delta * 8.0))
@@ -238,7 +371,7 @@ func _process(delta: float) -> void:
 func _draw_boss_bar() -> void:
 	var c := _boss_bar
 	var font := ThemeDB.fallback_font
-	var title := "SHADOW BEAR"
+	var title := "CLAUS THE BEAR"
 	var w := font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, 34).x
 	c.draw_string_outline(font, Vector2(430 - w * 0.5, 34), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 34, 10, Color(0.15, 0.0, 0.2))
 	c.draw_string(font, Vector2(430 - w * 0.5, 34), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 34, Color(0.95, 0.8, 1.0))

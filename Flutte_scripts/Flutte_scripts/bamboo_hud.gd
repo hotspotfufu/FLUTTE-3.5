@@ -1,7 +1,7 @@
 extends CanvasLayer
 ## HUD:
 ##   * bamboo counter (top right). At 50+ bamboo the icon turns RED and pulses:
-##     the red beam is ready. Tap / click the icon (or press Q, gamepad Y) to fire.
+##     the energy ball is ready. Tap / click the icon (or press Q, gamepad Y) to fire.
 ##   * health bar (bottom middle) with Flutte's picture next to it.
 
 const SPECIAL_COST := 50
@@ -62,7 +62,7 @@ func _ready() -> void:
 	rs.outline_size = 6
 	rs.outline_color = Color(0.5, 0.0, 0.05)
 	_ready_label.label_settings = rs
-	_ready_label.text = "BEAM READY!  tap / Q"
+	_ready_label.text = "ENERGY BALL READY!  tap / Q"
 	_ready_label.position = Vector2(-6, 60)
 	_ready_label.visible = false
 	anchor.add_child(_ready_label)
@@ -132,7 +132,7 @@ func _process(delta: float) -> void:
 
 
 func _input(event: InputEvent) -> void:
-	# tap / click the red bamboo icon to fire the beam
+	# tap / click the red bamboo icon to throw the energy ball
 	if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed and _bamboo >= SPECIAL_COST:
 		var r := Rect2(_box.global_position - Vector2(16, 16), _box.size + Vector2(32, 60))
 		if r.has_point((event as InputEventScreenTouch).position):

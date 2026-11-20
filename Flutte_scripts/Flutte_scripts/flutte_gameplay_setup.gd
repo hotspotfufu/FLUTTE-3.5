@@ -11,6 +11,7 @@ const HINT := "A/D or Arrows: walk   Shift: run   Space: jump   J or F: swing st
 
 var _dir := ""
 var _last_scene: Node = null
+var _title_shown := false
 
 
 func _ready() -> void:
@@ -43,6 +44,13 @@ func _setup(level: Node) -> void:
 	level.add_child(player)
 	player.global_position = spawn
 	player.set("spawn_point", spawn)
+
+	player.set("max_x", 126.4)          # the path now runs on to the boss arena
+
+	# --- title screen (once, when the game opens) ---
+	if not _title_shown:
+		_title_shown = true
+		add_child(load(_dir + "/flutte_title.gd").new())
 
 	# --- hint text ---
 	var hint := level.get_node_or_null("HUD/Hint")
