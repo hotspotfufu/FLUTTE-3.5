@@ -15,7 +15,7 @@ extends Node
 @export var night_sun_energy: float = 0.3
 @export var day_ambient_color: Color = Color(1.0, 0.86, 0.90)
 @export var night_ambient_color: Color = Color(0.35, 0.33, 0.62)
-@export var day_ambient_energy: float = 0.75
+@export var day_ambient_energy: float = 0.5
 @export var night_ambient_energy: float = 0.45
 
 var _night_amount: float = 0.0
@@ -56,5 +56,6 @@ func _apply(t: float) -> void:
 		var env := world_environment.environment
 		env.ambient_light_color = day_ambient_color.lerp(night_ambient_color, t)
 		env.ambient_light_energy = lerpf(day_ambient_energy, night_ambient_energy, t)
+		env.fog_light_color = Color(0.98, 0.84, 0.9).lerp(Color(0.22, 0.2, 0.42), t)
 	if scenery != null and scenery.has_method("set_night_amount"):
 		scenery.call("set_night_amount", t)
